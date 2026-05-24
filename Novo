@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+      #!/usr/bin/env python3
 """
 Menor Preço RJ — Scraper de Encartes v2
 - Roda em loop de 30 em 30 minutos (ou intervalo configurável)
@@ -17,21 +17,22 @@ import argparse
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional, Union
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 
 # ─── Configuração ────────────────────────────────────────────────────────────
 
-DATA_DIR   = Path(_file_).parent / "data"
+DATA_DIR   = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 OUTPUT     = DATA_DIR / "encartes.json"
 INDEX_OUT  = DATA_DIR / "search_index.json"
 
-INTERVAL_MINUTES = 30          # intervalo entre ciclos completos
-MAX_PRODUCTS_PER_SM = 200      # máximo de produtos por supermercado
-REQUEST_TIMEOUT    = 25        # segundos por requisição
-MAX_RETRIES        = 3         # tentativas por URL
-BACKOFF_BASE       = 4         # segundos base para retry (dobra a cada falha)
+INTERVAL_MINUTES   = 30          # intervalo entre ciclos completos
+MAX_PRODUCTS_PER_SM = 200        # máximo de produtos por supermercado
+REQUEST_TIMEOUT    = 25          # segundos por requisição
+MAX_RETRIES        = 3           # tentativas por URL
+BACKOFF_BASE       = 4           # segundos base para retry (dobra a cada falha)
 
 # Pool de User-Agents para rotação
 USER_AGENTS = [
@@ -50,24 +51,13 @@ logging.basicConfig(
 log = logging.getLogger("scraper")
 
 # ─── Definição dos supermercados e suas APIs ──────────────────────────────────
-#
-# ALTERAÇÕES v2.1 (correção de URLs):
-#   - Guanabara:  API VTEX retornava 404 → removida; usa HTML direto de /ofertas
-#   - Prezunic:   JSONDecodeError na API VTEX → removida; usa HTML de /ofertas
-#   - Carrefour:  domínio mercado.carrefour.com.br → meucarrefour.com.br
-#   - Assaí:      path de ofertas mantido (/ofertas), API VTEX removida (bloqueada)
-#   - Atacadão:   domínio e path atualizados para /ofertas
-#   - Mundial:    URL de encarte corrigida para /encarte
-#   - Supermarket: domínio corrigido → redesupermarket.com.br
-#   - Rede Economia: path corrigido → /encartes/
-#
+
 SUPERMARKETS = [
     {
         "name":       "Guanabara",
         "color":      "#c8102e",
         "light":      "#fee2e2",
         "site":       "supermercadosguanabara.com.br",
-        # API VTEX bloqueada com 404; scraping direto da página de ofertas
         "offers_url": "https://www.supermercadosguanabara.com.br/ofertas",
         "parser":     "html",
     },
@@ -76,7 +66,6 @@ SUPERMARKETS = [
         "color":      "#15803d",
         "light":      "#dcfce7",
         "site":       "prezunic.com.br",
-        # API VTEX retorna JSON inválido; scraping direto da página de ofertas
         "offers_url": "https://www.prezunic.com.br/ofertas",
         "parser":     "html",
     },
@@ -85,7 +74,6 @@ SUPERMARKETS = [
         "color":      "#0057a8",
         "light":      "#dbeafe",
         "site":       "meucarrefour.com.br",
-        # Domínio correto da loja online do Carrefour Brasil
         "offers_url": "https://www.meucarrefour.com.br/ofertas",
         "api_pages": [
             f"https://www.meucarrefour.com.br/api/catalog_system/pub/products/search?O=OrderByPriceDESC&_from={i}&_to={i+49}&fq=specificationFilter_62:Ofertas"
@@ -98,7 +86,6 @@ SUPERMARKETS = [
         "color":      "#e85d00",
         "light":      "#ffedd5",
         "site":       "assai.com.br",
-        # API VTEX bloqueada; scraping da página de ofertas pública
         "offers_url": "https://www.assai.com.br/ofertas",
         "parser":     "html",
     },
@@ -107,7 +94,6 @@ SUPERMARKETS = [
         "color":      "#b91c1c",
         "light":      "#fecaca",
         "site":       "atacadao.com.br",
-        # Página de ofertas pública (encarte digital)
         "offers_url": "https://www.atacadao.com.br/ofertas",
         "api_pages": [
             f"https://www.atacadao.com.br/api/catalog_system/pub/products/search?O=OrderByPriceDESC&_from={i}&_to={i+49}"
@@ -120,7 +106,6 @@ SUPERMARKETS = [
         "color":      "#1d4ed8",
         "light":      "#dbeafe",
         "site":       "supermercadosmundial.com.br",
-        # Página de encarte correta (confirmada nos resultados de busca)
         "offers_url": "https://www.supermercadosmundial.com.br/encarte",
         "api_pages": [
             f"https://www.supermercadosmundial.com.br/api/catalog_system/pub/products/search?O=OrderByPriceDESC&_from={i}&_to={i+49}&fq=specificationFilter_1:Promo%C3%A7%C3%B5es"
@@ -132,7 +117,6 @@ SUPERMARKETS = [
         "name":       "Supermarket",
         "color":      "#7c3aed",
         "light":      "#ede9fe",
-        # Domínio correto: redesupermarket.com.br (não supermarket.com.br)
         "site":       "redesupermarket.com.br",
         "offers_url": "https://redesupermarket.com.br/",
         "api_pages": [
@@ -146,7 +130,6 @@ SUPERMARKETS = [
         "color":      "#b45309",
         "light":      "#fef3c7",
         "site":       "redeconomia.com.br",
-        # Path correto do encarte: /encartes/ (não /encarte)
         "offers_url": "https://www.redeconomia.com.br/encartes/",
         "parser":     "html",
     },
@@ -163,13 +146,13 @@ def random_headers(accept_json: bool = False) -> dict:
         "Cache-Control":   "no-cache",
     }
     if accept_json:
-        h["Accept"] = "application/json, text/plain, /"
+        h["Accept"] = "application/json, text/plain, */*"
     else:
-        h["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,/;q=0.8"
+        h["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
     return h
 
 
-def fetch(url: str, as_json: bool = False, timeout: int = REQUEST_TIMEOUT) -> str | dict | None:
+def fetch(url: str, as_json: bool = False, timeout: int = REQUEST_TIMEOUT) -> Optional[Union[str, dict]]:
     """Faz requisição com retry e backoff exponencial."""
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -190,7 +173,7 @@ def fetch(url: str, as_json: bool = False, timeout: int = REQUEST_TIMEOUT) -> st
             else:
                 break  # 404 etc. — não adianta tentar
         except (URLError, json.JSONDecodeError) as e:
-            log.warning(f"  Erro {type(e)._name_} em {url} (tentativa {attempt}/{MAX_RETRIES}): {e}")
+            log.warning(f"  Erro {type(e).__name__} em {url} (tentativa {attempt}/{MAX_RETRIES}): {e}")
             if attempt < MAX_RETRIES:
                 time.sleep(BACKOFF_BASE * attempt)
         except Exception as e:
@@ -204,7 +187,7 @@ PRICE_RE    = re.compile(r"R?\$?\s*(\d{1,4}[.,]\d{2})(?!\d)")
 NAME_BEFORE = re.compile(r"([A-Za-zÀ-ÿ][^\n\r<]{4,100}?)\s*R?\$\s*\d{1,4}[.,]\d{2}")
 
 
-def _parse_price(raw: str) -> float | None:
+def _parse_price(raw: str) -> Optional[float]:
     """Converte '12,90' ou '12.90' → float."""
     try:
         clean = re.sub(r"[^\d,.]", "", str(raw))
@@ -218,7 +201,7 @@ def _parse_price(raw: str) -> float | None:
         return None
 
 
-def parse_vtex(pages_data: list[list], base_url: str) -> list[dict]:
+def parse_vtex(pages_data: list, base_url: str) -> list:
     """
     Parser para lojas VTEX (Carrefour, Atacadão, Mundial, Supermarket).
     Formato: lista de produtos com 'productName', 'items[].sellers[].commertialOffer'
@@ -229,15 +212,15 @@ def parse_vtex(pages_data: list[list], base_url: str) -> list[dict]:
             continue
         for p in products:
             try:
-                name = p.get("productName", "").strip()
+                name  = p.get("productName", "").strip()
                 brand = p.get("brand", "").strip()
                 link  = p.get("link", base_url)
 
                 best_price = None
                 best_unit  = "un"
                 for item in p.get("items", []):
-                    unit_m = item.get("unitMultiplier", 1)
-                    meas   = item.get("measurementUnit", "un")
+                    unit_m     = item.get("unitMultiplier", 1)
+                    meas       = item.get("measurementUnit", "un")
                     unit_label = f"{unit_m}{meas}" if unit_m != 1 else meas
 
                     for seller in item.get("sellers", []):
@@ -264,11 +247,12 @@ def parse_vtex(pages_data: list[list], base_url: str) -> list[dict]:
     return offers
 
 
-def parse_jsonld(html: str, base_url: str) -> list[dict]:
+def parse_jsonld(html: str, base_url: str) -> list:
     """Extrai produtos de blocos JSON-LD (schema.org/Product ou Offer)."""
     offers = []
+    # BUG CORRIGIDO: regex agora usa .*? (non-greedy) e [^>]* no atributo
     blocks = re.findall(
-        r'<script[^>]+type=["\']application/ld\+json["\'][^>]>(.?)</script>',
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
         html, re.S | re.I
     )
     for raw in blocks:
@@ -294,27 +278,29 @@ def parse_jsonld(html: str, base_url: str) -> list[dict]:
 
             price = _parse_price(price_src.get("price", ""))
             if name and price:
+                brand_raw = item.get("brand", {})
+                brand_name = brand_raw.get("name", "") if isinstance(brand_raw, dict) else ""
                 offers.append({
                     "product":   name[:120],
                     "price":     price,
                     "unit":      "un",
                     "url":       url,
                     "promotion": True,
-                    "brand":     item.get("brand", {}).get("name", "") if isinstance(item.get("brand"), dict) else "",
+                    "brand":     brand_name,
                 })
     return offers
 
 
-def parse_html_fallback(html: str, base_url: str) -> list[dict]:
+def parse_html_fallback(html: str, base_url: str) -> list:
     """Extrai produto+preço do texto puro da página."""
-    text = re.sub(r"<(script|style)[^>]>.?</\1>", " ", html, flags=re.S | re.I)
+    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.S | re.I)
     text = re.sub(r"<[^>]+>", " ", text)
     text = text.replace("&nbsp;", " ").replace("&amp;", "&")
     text = re.sub(r"\s+", " ", text)
 
     offers = []
     for m in NAME_BEFORE.finditer(text):
-        name = m.group(1).strip()
+        name    = m.group(1).strip()
         price_m = PRICE_RE.search(m.group(0))
         if price_m and len(name) > 4:
             price = _parse_price(price_m.group(1))
@@ -338,40 +324,46 @@ def normalize(text: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
 
 
-def tokenize(text: str) -> list[str]:
+def tokenize(text: str) -> list:
     """Divide em tokens alfanuméricos com pelo menos 2 chars."""
     return [t for t in re.split(r"[^a-z0-9]+", normalize(text)) if len(t) >= 2]
 
 
 def build_search_index(sm_data: dict) -> dict:
     """
-    Cria índice invertido: token → lista de {sm, product_idx}
+    Cria índice invertido: token → lista de IDs de produto.
     Permite busca genérica ("leite") e específica ("leite integral italac").
     """
-    index: dict[str, list] = {}
-    products_flat: list[dict] = []
+    index: dict = {}
+    products_flat: list = []
 
     for sm_name, sm in sm_data.items():
         for offer in sm.get("offers", []):
             pid = len(products_flat)
             products_flat.append({
-                "id":      pid,
-                "sm":      sm_name,
-                "color":   sm.get("color", "#333"),
-                "light":   sm.get("light", "#eee"),
+                "id":    pid,
+                "sm":    sm_name,
+                "color": sm.get("color", "#333"),
+                "light": sm.get("light", "#eee"),
                 **offer,
             })
-            full_text = f"{offer.get('product','')} {offer.get('brand','')}"
+            full_text = f"{offer.get('product', '')} {offer.get('brand', '')}"
             for token in tokenize(full_text):
                 index.setdefault(token, []).append(pid)
 
     for token in index:
         index[token] = list(dict.fromkeys(index[token]))
 
-    return {"products": products_flat, "index": index}
+    # BUG CORRIGIDO: retorna index_map (dict) além de products (list)
+    # para que search() funcione corretamente
+    return {
+        "products":  products_flat,
+        "index_map": {str(p["id"]): p for p in products_flat},
+        "index":     index,
+    }
 
 
-def search(query: str, index_data: dict, max_results: int = 50) -> list[dict]:
+def search(query: str, index_data: dict, max_results: int = 50) -> list:
     """
     Busca no índice. Retorna produtos ordenados por relevância e preço crescente.
     """
@@ -382,24 +374,25 @@ def search(query: str, index_data: dict, max_results: int = 50) -> list[dict]:
     products = index_data["index_map"]
     idx      = index_data["index"]
 
-    scores: dict[int, int] = {}
+    scores: dict = {}
     for token in tokens:
         for pid in idx.get(token, []):
             scores[pid] = scores.get(pid, 0) + 1
 
     n = len(tokens)
-    matched = [products[pid] for pid, score in scores.items() if score >= n]
+    matched = [products[str(pid)] for pid, score in scores.items() if score >= n]
     matched.sort(key=lambda p: p.get("price", 9999))
     return matched[:max_results]
 
+
 # ─── Core scraping ───────────────────────────────────────────────────────────
 
-def scrape_supermarket(sm: dict) -> list[dict]:
+def scrape_supermarket(sm: dict) -> list:
     name   = sm["name"]
     parser = sm.get("parser", "html")
     base   = sm["offers_url"]
 
-    offers: list[dict] = []
+    offers: list = []
 
     # ── API JSON (VTEX) ────────────────────────────────────────────────────
     if parser == "vtex" and "api_pages" in sm:
@@ -439,8 +432,8 @@ def scrape_supermarket(sm: dict) -> list[dict]:
         }]
 
     # ── Deduplicação ───────────────────────────────────────────────────────
-    seen: set[str] = set()
-    unique: list[dict] = []
+    seen: set = set()
+    unique: list = []
     for o in offers:
         key = normalize(o["product"])[:60]
         if key not in seen:
@@ -515,12 +508,9 @@ def run_cycle():
         existing["updated_at"]   = datetime.now(timezone.utc).isoformat()
         existing["supermarkets"] = sm_data
 
-        raw_index = build_search_index(sm_data)
-        index_ready = {
-            "index_map": {p["id"]: p for p in raw_index["products"]},
-            "index":     raw_index["index"],
-        }
-        save_all(existing, raw_index)
+        # BUG CORRIGIDO: salva index_data (que contém index_map) em vez de raw_index
+        index_data = build_search_index(sm_data)
+        save_all(existing, index_data)
     else:
         log.info("\n⏩ Nenhuma mudança detectada, JSON não atualizado.")
 
@@ -549,12 +539,8 @@ def main():
         if not INDEX_OUT.exists():
             print("❌ Índice não encontrado. Rode o scraper primeiro.")
             return
-        raw = json.loads(INDEX_OUT.read_text("utf-8"))
-        index_ready = {
-            "index_map": {p["id"]: p for p in raw["products"]},
-            "index":     raw["index"],
-        }
-        results = search(args.search, index_ready)
+        index_data = json.loads(INDEX_OUT.read_text("utf-8"))
+        results = search(args.search, index_data)
         if not results:
             print(f'Nenhum resultado para "{args.search}"')
         else:
@@ -576,5 +562,5 @@ def main():
         time.sleep(args.interval * 60)
 
 
-if _name_ == "_main_":
-    main()
+if __name__ == "__main__":
+    main()                  
