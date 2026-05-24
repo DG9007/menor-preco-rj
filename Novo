@@ -76,7 +76,7 @@ SUPERMARKETS = [
         "color":      "#15803d",
         "light":      "#dcfce7",
         "site":       "prezunic.com.br",
-        "offers_url": "https://www.prezunic.com.br/encartes",
+        "offers_url": "https://www.prezunic.com.br/encarte",
         "api_pages": [
             f"https://www.prezunic.com.br/api/catalog_system/pub/products/search?O=OrderByPriceDESC&_from={i}&_to={i+49}&fq=specificationFilter_193:Ofertas"
             for i in range(0, 200, 50)
