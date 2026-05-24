@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""
+Menor Preço RJ — Scraper de Encartes
+Roda todo dia via GitHub Actions e atualiza data/encartes.json
+"""
+
+import json
+import re
+import time
+import random
+import hashlib
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.request import urlopen, Request
+from urllib.error import URLError
+
+DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR.mkdir(exist_ok=True)
+OUTPUT = DATA_DIR / "encartes.json"
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9",
+}
+
+# URLs que retornam HTML com preços legíveis (sem JavaScript)
+SUPERMARKETS = [
+    {
+        "name": "Guanabara",
+        "color": "#c8102e",
+        "light": "#fee2e2",
+        "site": "supermercadosguanabara.com.br",
+        "offers_url": "https://www.supermercadosguanabara.com.br/",
+        # Guanabara exibe preços na home em texto puro
+    },
+    {
+        "name": "Prezunic",
+        "color": "#15803d",
+        "light": "#dcfce7",
+        "site": "prezunic.com.br",
+        "offers_url": "https://www.prezunic.com.br/encartes",
+    },
+    {
+        "name": "Carrefour",
+        "color": "#0057a8",
+        "light": "#dbeafe",
+        "site": "carrefour.com.br",
+        "offers_url": "https://www.carrefour.com.br/ofertas/supermercado",
+    },
+    {
+        "name": "Assaí",
+        "color": "#e85d00",
+        "light": "#ffedd5",
+        "site": "assai.com.br",
+        "offers_url": "https://www.assai.com.br/ofertas",
+    },
+    {
+        "name": "Atacadão",
+        "color": "#b91c1c",
+        "light": "#fecaca",
+        "site": "atacadao.com.br",
+        "offers_url": "https://www.atacadao.com.br/folheto-de-ofertas",
+    },
+    {
+        "name": "Mundial",
+        "color": "#1d4ed8",
+        "light": "#dbeafe",
+        "site": "supermercadosmundial.com.br",
+        "offers_url": "https://www.supermercadosmundial.com.br/ofertas-da-semana",
+    },
+    {
+        "name": "Supermarket",
+        "color": "#7c3aed",
+        "light": "#ede9fe",
+        "site": "supermarket.com.br",
+        "offers_url": "https://www.supermarket.com.br/ofertas",
+    },
+    {
+        "name": "Rede Economia",
+        "color": "#b45309",
+        "light": "#fef3c7",
+        "site": "redeeconomia.com.br",
+        "offers_url": "https://www.redeeconomia.com.br/encarte",
+    },
+]
+
+# Regex para capturar preços no formato brasileiro
+PRICE_RE  = re.compile(r"R?\$?\s*(\d{1,4}[.,]\d{2})(?!\d)")
+# Regex para capturar nomes de produto (texto antes do preço, 5-80 chars)
+NAME_BEFORE_RE = re.compile(r"([A-Za-zÀ-ÿ][^\n\r<]{4,79}?)\s*R?\$\s*\d{1,4}[.,]\d{2}")
+
+
+def fetch_html(url: str, timeout: int = 20) -> str | None:
+    try:
+        req = Request(url, headers=HEADERS)
+        with urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+            enc = r.headers.get_content_charset("utf-8")
+            return raw.decode(enc, errors="replace")
+    except URLError as e:
+        print(f"  ⚠ Erro ao buscar {url}: {e}")
+        return None
+    except Exception as e:
+        print(f"  ⚠ Erro inesperado: {e}")
+        return None
+
+
+def extract_text_blocks(html: str) -> str:
+    """Remove tags HTML e retorna texto limpo."""
+    # Remove script/style
+    html = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.S|re.I)
+    # Remove tags
+    html = re.sub(r"<[^>]+>", " ", html)
+    # Decodifica entidades comuns
+    html = html.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    # Colapsa espaços
+    html = re.sub(r"\s+", " ", html)
+    return html
+
+
+def parse_offers(html: str, sm_name: str, base_url: str) -> list[dict]:
+    offers = []
+
+    # 1) Tenta JSON-LD (mais confiável)
+    for block in re.findall(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html, re.S|re.I):
+        prices = re.findall(r'"price"\s*:\s*"?([\d.,]+)"?', block)
+        names  = re.findall(r'"name"\s*:\s*"([^"]{3,80})"', block)
+        urls   = re.findall(r'"url"\s*:\s*"(https?://[^"]+)"', block)
+        for i, (n, p) in enumerate(zip(names, prices)):
+            try:
+                price = float(p.replace(".", "").replace(",", "."))
+                if 0.5 < price < 5000:
+                    offers.append({
+                        "product":   n.strip(),
+                        "price":     round(price, 2),
+                        "unit":      "un",
+                        "url":       urls[i] if i < len(urls) else base_url,
+                        "promotion": True,
+                    })
+            except ValueError:
+                pass
+
+    # 2) Tenta meta og:description e título da página (alguns sites colocam preços aí)
+    if not offers:
+        text = extract_text_blocks(html)
+        # Procura padrão "Nome do Produto R$ 9,99" ou "Nome · 9,99"
+        for m in NAME_BEFORE_RE.finditer(text):
+            nome = m.group(1).strip()
+            price_str = PRICE_RE.search(m.group(0))
+            if price_str and len(nome) > 4:
+                try:
+                    price = float(price_str.group(1).replace(".", "").replace(",", "."))
+                    if 0.5 < price < 5000:
+                        offers.append({
+                            "product":   nome[:80],
+                            "price":     round(price, 2),
+                            "unit":      "un",
+                            "url":       base_url,
+                            "promotion": True,
+                        })
+                except ValueError:
+                    pass
+
+    # 3) Fallback — registra o link para o usuário ver manualmente
+    if not offers:
+        offers = [{
+            "product": f"Ver encarte {sm_name} no site",
+            "price":   0,
+            "unit":    "",
+            "url":     base_url,
+            "promotion": False,
+        }]
+
+    # Remove duplicatas por nome
+    seen = set()
+    unique = []
+    for o in offers:
+        key = o["product"].lower()[:40]
+        if key not in seen:
+            seen.add(key)
+            unique.append(o)
+
+    return unique[:50]
+
+
+def content_hash(offers: list) -> str:
+    s = json.dumps(offers, sort_keys=True)
+    return hashlib.md5(s.encode()).hexdigest()[:8]
+
+
+def load_existing() -> dict:
+    if OUTPUT.exists():
+        try:
+            return json.loads(OUTPUT.read_text("utf-8"))
+        except Exception:
+            pass
+    return {"updated_at": "", "supermarkets": {}}
+
+
+def save(data: dict):
+    OUTPUT.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
+    print(f"✅ Salvo em {OUTPUT}")
+
+
+def run():
+    print(f"🔍 Scraper iniciado — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    existing = load_existing()
+    sm_data  = existing.get("supermarkets", {})
+    changed  = False
+
+    for sm in SUPERMARKETS:
+        name = sm["name"]
+        url  = sm["offers_url"]
+        print(f"\n→ {name} ({url})")
+
+        html = fetch_html(url)
+        if not html:
+            print(f"  ✗ Sem resposta, mantendo dados anteriores")
+            continue
+
+        offers   = parse_offers(html, name, url)
+        real     = [o for o in offers if o["price"] > 0]
+        new_hash = content_hash(offers)
+        old_hash = sm_data.get(name, {}).get("hash", "")
+
+        print(f"  {'✓' if real else '–'} {len(real)} oferta(s) com preço encontrada(s)")
+
+        if new_hash != old_hash:
+            sm_data[name] = {
+                "name":       name,
+                "color":      sm["color"],
+                "light":      sm["light"],
+                "site":       sm["site"],
+                "offers_url": url,
+                "hash":       new_hash,
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "offers":     offers,
+            }
+            changed = True
+
+        time.sleep(random.uniform(2, 5))
+
+    if changed or not existing.get("updated_at"):
+        existing["updated_at"]   = datetime.now(timezone.utc).isoformat()
+        existing["supermarkets"] = sm_data
+        save(existing)
+    else:
+        print("\n⏩ Nenhuma mudança, JSON não atualizado.")
+
+    print("\n✅ Concluído.")
+
+
+if __name__ == "__main__":
+    run()
