@@ -1,4 +1,95 @@
 {
-  "updated_at": "2026-05-23T10:00:00+00:00",
-  "supermarkets": {}
+  "updated_at": "2026-05-24T02:18:06.207235+00:00",
+  "supermarkets": {
+    "Guanabara": {
+      "name": "Guanabara",
+      "color": "#c8102e",
+      "light": "#fee2e2",
+      "site": "supermercadosguanabara.com.br",
+      "offers_url": "https://www.supermercadosguanabara.com.br/ofertas",
+      "hash": "d450f49e",
+      "fetched_at": "2026-05-24T02:17:30.283842+00:00",
+      "offers": [
+        {
+          "product": "Encarte Guanabara (acesse o site para ver ofertas)",
+          "price": 0,
+          "unit": "",
+          "url": "https://www.supermercadosguanabara.com.br/ofertas",
+          "promotion": false
+        }
+      ]
+    },
+    "Assaí": {
+      "name": "Assaí",
+      "color": "#e85d00",
+      "light": "#ffedd5",
+      "site": "assai.com.br",
+      "offers_url": "https://www.assai.com.br/ofertas",
+      "hash": "b0a74435",
+      "fetched_at": "2026-05-24T02:17:35.637208+00:00",
+      "offers": [
+        {
+          "url": "https://www.assai.com.br/ofertas",
+          "product": "Escolha uma Loja",
+          "price": 605.0,
+          "unit": "un",
+          "promotion": true
+        }
+      ]
+    },
+    "Atacadão": {
+      "name": "Atacadão",
+      "color": "#b91c1c",
+      "light": "#fecaca",
+      "site": "atacadao.com.br",
+      "offers_url": "https://www.atacadao.com.br/ofertas",
+      "hash": "4c2a653a",
+      "fetched_at": "2026-05-24T02:17:38.172362+00:00",
+      "offers": [
+        {
+          "product": "Encarte Atacadão (acesse o site para ver ofertas)",
+          "price": 0,
+          "unit": "",
+          "url": "https://www.atacadao.com.br/ofertas",
+          "promotion": false
+        }
+      ]
+    },
+    "Prezunic": {
+      "name": "Prezunic",
+      "color": "#15803d",
+      "light": "#dcfce7",
+      "site": "prezunic.com.br",
+      "offers_url": "https://www.prezunic.com.br/ofertas",
+      "hash": "8665c54b",
+      "fetched_at": "2026-05-24T02:17:42.945467+00:00",
+      "offers": [
+        {
+          "product": "Encarte Prezunic (acesse o site para ver ofertas)",
+          "price": 0,
+          "unit": "",
+          "url": "https://www.prezunic.com.br/ofertas",
+          "promotion": false
+        }
+      ]
+    },
+    "Mundial": {
+      "name": "Mundial",
+      "color": "#1d4ed8",
+      "light": "#dbeafe",
+      "site": "supermercadosmundial.com.br",
+      "offers_url": "https://www.supermercadosmundial.com.br/ofertas",
+      "hash": "158042fb",
+      "fetched_at": "2026-05-24T02:17:47.294730+00:00",
+      "offers": [
+        {
+          "product": "Encarte Mundial (acesse o site para ver ofertas)",
+          "price": 0,
+          "unit": "",
+          "url": "https://www.supermercadosmundial.com.br/ofertas",
+          "promotion": false
+        }
+      ]
+    }
+  }
 }
