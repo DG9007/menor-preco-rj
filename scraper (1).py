@@ -22,7 +22,7 @@ from urllib.error import URLError, HTTPError
 
 # ─── Configuração ────────────────────────────────────────────────────────────
 
-DATA_DIR   = Path(__file__).parent / "data"
+DATA_DIR   = Path(_file_).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 OUTPUT     = DATA_DIR / "encartes.json"
 INDEX_OUT  = DATA_DIR / "search_index.json"
@@ -51,11 +51,15 @@ log = logging.getLogger("scraper")
 
 # ─── Definição dos supermercados e suas APIs ──────────────────────────────────
 #
-# Cada entrada pode ter:
-#   "api_url"    → endpoint JSON (preferido)
-#   "api_pages"  → lista de URLs paginadas para varrer
-#   "offers_url" → fallback HTML
-#   "parser"     → nome do parser específico (para APIs proprietárias)
+# ALTERAÇÕES v2.1 (correção de URLs):
+#   - Guanabara:  API VTEX retornava 404 → removida; usa HTML direto de /ofertas
+#   - Prezunic:   JSONDecodeError na API VTEX → removida; usa HTML de /ofertas
+#   - Carrefour:  domínio mercado.carrefour.com.br → meucarrefour.com.br
+#   - Assaí:      path de ofertas mantido (/ofertas), API VTEX removida (bloqueada)
+#   - Atacadão:   domínio e path atualizados para /ofertas
+#   - Mundial:    URL de encarte corrigida para /encarte
+#   - Supermarket: domínio corrigido → redesupermarket.com.br
+#   - Rede Economia: path corrigido → /encartes/
 #
 SUPERMARKETS = [
     {
@@ -63,35 +67,28 @@ SUPERMARKETS = [
         "color":      "#c8102e",
         "light":      "#fee2e2",
         "site":       "supermercadosguanabara.com.br",
-        "offers_url": "https://www.supermercadosguanabara.com.br/",
-        # API de produtos em promoção (paginada)
-        "api_pages": [
-            f"https://www.supermercadosguanabara.com.br/api/catalog_system/pub/products/search?O=OrderByPriceDESC&_from={i}&_to={i+49}&fq=specificationFilter_40:Oferta"
-            for i in range(0, 200, 50)
-        ],
-        "parser": "vtex",
+        # API VTEX bloqueada com 404; scraping direto da página de ofertas
+        "offers_url": "https://www.supermercadosguanabara.com.br/ofertas",
+        "parser":     "html",
     },
     {
         "name":       "Prezunic",
         "color":      "#15803d",
         "light":      "#dcfce7",
         "site":       "prezunic.com.br",
-        "offers_url": "https://www.prezunic.com.br/encartes",
-        "api_pages": [
-            f"https://www.prezunic.com.br/api/catalog_system/pub/products/search?O=OrderByPriceDESC&_from={i}&_to={i+49}&fq=specificationFilter_193:Ofertas"
-            for i in range(0, 200, 50)
-        ],
-        "parser": "vtex",
+        # API VTEX retorna JSON inválido; scraping direto da página de ofertas
+        "offers_url": "https://www.prezunic.com.br/ofertas",
+        "parser":     "html",
     },
     {
         "name":       "Carrefour",
         "color":      "#0057a8",
         "light":      "#dbeafe",
-        "site":       "carrefour.com.br",
-        "offers_url": "https://www.carrefour.com.br/ofertas/supermercado",
-        # Carrefour usa API GraphQL — usamos o endpoint REST público
+        "site":       "meucarrefour.com.br",
+        # Domínio correto da loja online do Carrefour Brasil
+        "offers_url": "https://www.meucarrefour.com.br/ofertas",
         "api_pages": [
-            f"https://mercado.carrefour.com.br/api/catalog_system/pub/products/search?O=OrderByPriceDESC&_from={i}&_to={i+49}&fq=specificationFilter_62:Ofertas"
+            f"https://www.meucarrefour.com.br/api/catalog_system/pub/products/search?O=OrderByPriceDESC&_from={i}&_to={i+49}&fq=specificationFilter_62:Ofertas"
             for i in range(0, 200, 50)
         ],
         "parser": "vtex",
@@ -101,19 +98,17 @@ SUPERMARKETS = [
         "color":      "#e85d00",
         "light":      "#ffedd5",
         "site":       "assai.com.br",
+        # API VTEX bloqueada; scraping da página de ofertas pública
         "offers_url": "https://www.assai.com.br/ofertas",
-        "api_pages": [
-            f"https://www.assai.com.br/api/catalog_system/pub/products/search?O=OrderByPriceDESC&_from={i}&_to={i+49}&fq=specificationFilter_1:Ofertas"
-            for i in range(0, 200, 50)
-        ],
-        "parser": "vtex",
+        "parser":     "html",
     },
     {
         "name":       "Atacadão",
         "color":      "#b91c1c",
         "light":      "#fecaca",
         "site":       "atacadao.com.br",
-        "offers_url": "https://www.atacadao.com.br/folheto-de-ofertas",
+        # Página de ofertas pública (encarte digital)
+        "offers_url": "https://www.atacadao.com.br/ofertas",
         "api_pages": [
             f"https://www.atacadao.com.br/api/catalog_system/pub/products/search?O=OrderByPriceDESC&_from={i}&_to={i+49}"
             for i in range(0, 200, 50)
@@ -125,7 +120,8 @@ SUPERMARKETS = [
         "color":      "#1d4ed8",
         "light":      "#dbeafe",
         "site":       "supermercadosmundial.com.br",
-        "offers_url": "https://www.supermercadosmundial.com.br/ofertas-da-semana",
+        # Página de encarte correta (confirmada nos resultados de busca)
+        "offers_url": "https://www.supermercadosmundial.com.br/encarte",
         "api_pages": [
             f"https://www.supermercadosmundial.com.br/api/catalog_system/pub/products/search?O=OrderByPriceDESC&_from={i}&_to={i+49}&fq=specificationFilter_1:Promo%C3%A7%C3%B5es"
             for i in range(0, 150, 50)
@@ -136,10 +132,11 @@ SUPERMARKETS = [
         "name":       "Supermarket",
         "color":      "#7c3aed",
         "light":      "#ede9fe",
-        "site":       "supermarket.com.br",
-        "offers_url": "https://www.supermarket.com.br/ofertas",
+        # Domínio correto: redesupermarket.com.br (não supermarket.com.br)
+        "site":       "redesupermarket.com.br",
+        "offers_url": "https://redesupermarket.com.br/",
         "api_pages": [
-            f"https://www.supermarket.com.br/api/catalog_system/pub/products/search?O=OrderByPriceDESC&_from={i}&_to={i+49}&fq=specificationFilter_1:Ofertas"
+            f"https://redesupermarket.com.br/api/catalog_system/pub/products/search?O=OrderByPriceDESC&_from={i}&_to={i+49}&fq=specificationFilter_1:Ofertas"
             for i in range(0, 150, 50)
         ],
         "parser": "vtex",
@@ -148,10 +145,10 @@ SUPERMARKETS = [
         "name":       "Rede Economia",
         "color":      "#b45309",
         "light":      "#fef3c7",
-        "site":       "redeeconomia.com.br",
-        "offers_url": "https://www.redeeconomia.com.br/encarte",
-        # Fallback HTML (site menor, sem API conhecida)
-        "parser": "html",
+        "site":       "redeconomia.com.br",
+        # Path correto do encarte: /encartes/ (não /encarte)
+        "offers_url": "https://www.redeconomia.com.br/encartes/",
+        "parser":     "html",
     },
 ]
 
@@ -166,9 +163,9 @@ def random_headers(accept_json: bool = False) -> dict:
         "Cache-Control":   "no-cache",
     }
     if accept_json:
-        h["Accept"] = "application/json, text/plain, */*"
+        h["Accept"] = "application/json, text/plain, /"
     else:
-        h["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        h["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,/;q=0.8"
     return h
 
 
@@ -193,7 +190,7 @@ def fetch(url: str, as_json: bool = False, timeout: int = REQUEST_TIMEOUT) -> st
             else:
                 break  # 404 etc. — não adianta tentar
         except (URLError, json.JSONDecodeError) as e:
-            log.warning(f"  Erro {type(e).__name__} em {url} (tentativa {attempt}/{MAX_RETRIES}): {e}")
+            log.warning(f"  Erro {type(e)._name_} em {url} (tentativa {attempt}/{MAX_RETRIES}): {e}")
             if attempt < MAX_RETRIES:
                 time.sleep(BACKOFF_BASE * attempt)
         except Exception as e:
@@ -210,9 +207,7 @@ NAME_BEFORE = re.compile(r"([A-Za-zÀ-ÿ][^\n\r<]{4,100}?)\s*R?\$\s*\d{1,4}[.,]\
 def _parse_price(raw: str) -> float | None:
     """Converte '12,90' ou '12.90' → float."""
     try:
-        # Remove tudo exceto dígitos, vírgula e ponto
         clean = re.sub(r"[^\d,.]", "", str(raw))
-        # Formato brasileiro: último separador é vírgula → decimal
         if "," in clean and "." in clean:
             clean = clean.replace(".", "").replace(",", ".")
         elif "," in clean:
@@ -225,7 +220,7 @@ def _parse_price(raw: str) -> float | None:
 
 def parse_vtex(pages_data: list[list], base_url: str) -> list[dict]:
     """
-    Parser para lojas VTEX (Guanabara, Prezunic, Carrefour, Assaí, etc.)
+    Parser para lojas VTEX (Carrefour, Atacadão, Mundial, Supermarket).
     Formato: lista de produtos com 'productName', 'items[].sellers[].commertialOffer'
     """
     offers = []
@@ -238,7 +233,6 @@ def parse_vtex(pages_data: list[list], base_url: str) -> list[dict]:
                 brand = p.get("brand", "").strip()
                 link  = p.get("link", base_url)
 
-                # Pega o menor preço entre os itens/sellers
                 best_price = None
                 best_unit  = "un"
                 for item in p.get("items", []):
@@ -274,7 +268,7 @@ def parse_jsonld(html: str, base_url: str) -> list[dict]:
     """Extrai produtos de blocos JSON-LD (schema.org/Product ou Offer)."""
     offers = []
     blocks = re.findall(
-        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]>(.?)</script>',
         html, re.S | re.I
     )
     for raw in blocks:
@@ -283,12 +277,9 @@ def parse_jsonld(html: str, base_url: str) -> list[dict]:
         except json.JSONDecodeError:
             continue
 
-        # Pode ser um objeto ou lista
         items = data if isinstance(data, list) else [data]
         for item in items:
-            # Suporta @type Product, ItemList, BreadcrumbList...
             if item.get("@type") not in ("Product", "Offer"):
-                # Tenta extrair de @graph
                 for node in item.get("@graph", []):
                     if node.get("@type") == "Product":
                         items.append(node)
@@ -297,7 +288,6 @@ def parse_jsonld(html: str, base_url: str) -> list[dict]:
             name = item.get("name", "").strip()
             url  = item.get("url", base_url)
 
-            # Preço pode estar em "offers" aninhado
             price_src = item if item.get("@type") == "Offer" else item.get("offers", {})
             if isinstance(price_src, list):
                 price_src = price_src[0] if price_src else {}
@@ -317,7 +307,7 @@ def parse_jsonld(html: str, base_url: str) -> list[dict]:
 
 def parse_html_fallback(html: str, base_url: str) -> list[dict]:
     """Extrai produto+preço do texto puro da página."""
-    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.S | re.I)
+    text = re.sub(r"<(script|style)[^>]>.?</\1>", " ", html, flags=re.S | re.I)
     text = re.sub(r"<[^>]+>", " ", text)
     text = text.replace("&nbsp;", " ").replace("&amp;", "&")
     text = re.sub(r"\s+", " ", text)
@@ -371,12 +361,10 @@ def build_search_index(sm_data: dict) -> dict:
                 "light":   sm.get("light", "#eee"),
                 **offer,
             })
-            # Indexa nome + marca
             full_text = f"{offer.get('product','')} {offer.get('brand','')}"
             for token in tokenize(full_text):
                 index.setdefault(token, []).append(pid)
 
-    # Remove duplicatas dentro de cada lista de token
     for token in index:
         index[token] = list(dict.fromkeys(index[token]))
 
@@ -385,8 +373,7 @@ def build_search_index(sm_data: dict) -> dict:
 
 def search(query: str, index_data: dict, max_results: int = 50) -> list[dict]:
     """
-    Busca no índice. Retorna produtos ordenados por relevância (contagem de tokens encontrados)
-    e depois por preço crescente.
+    Busca no índice. Retorna produtos ordenados por relevância e preço crescente.
     """
     tokens = tokenize(query)
     if not tokens:
@@ -395,17 +382,13 @@ def search(query: str, index_data: dict, max_results: int = 50) -> list[dict]:
     products = index_data["index_map"]
     idx      = index_data["index"]
 
-    # Conta quantos tokens batem para cada produto
     scores: dict[int, int] = {}
     for token in tokens:
         for pid in idx.get(token, []):
             scores[pid] = scores.get(pid, 0) + 1
 
-    # Filtra só quem tem TODOS os tokens (busca AND)
     n = len(tokens)
     matched = [products[pid] for pid, score in scores.items() if score >= n]
-
-    # Ordena por preço crescente
     matched.sort(key=lambda p: p.get("price", 9999))
     return matched[:max_results]
 
@@ -426,7 +409,6 @@ def scrape_supermarket(sm: dict) -> list[dict]:
             data = fetch(url, as_json=True)
             if data:
                 pages_data.append(data)
-            # Delay anti-bloqueio entre páginas da mesma loja
             time.sleep(random.uniform(1.5, 4.0))
 
         if pages_data:
@@ -438,7 +420,6 @@ def scrape_supermarket(sm: dict) -> list[dict]:
         log.info(f"  [{name}] Tentando HTML: {base}")
         html = fetch(base)
         if html:
-            # Tenta JSON-LD primeiro (mais preciso)
             offers = parse_jsonld(html, base)
             if offers:
                 log.info(f"  [{name}] {len(offers)} produtos via JSON-LD")
@@ -485,7 +466,6 @@ def load_existing() -> dict:
 
 def save_all(data: dict, index_data: dict):
     OUTPUT.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
-    # Salva índice separado (pode ser grande)
     INDEX_OUT.write_text(json.dumps(index_data, ensure_ascii=False), "utf-8")
     total = sum(len(sm.get("offers", [])) for sm in data["supermarkets"].values())
     log.info(f"✅ Salvo: {total} produtos em {OUTPUT}")
@@ -527,7 +507,6 @@ def run_cycle():
             }
             changed = True
 
-        # Delay entre supermercados (anti-bloqueio)
         delay = random.uniform(8, 20)
         log.info(f"  ⏳ Aguardando {delay:.1f}s antes do próximo supermercado…")
         time.sleep(delay)
@@ -536,9 +515,7 @@ def run_cycle():
         existing["updated_at"]   = datetime.now(timezone.utc).isoformat()
         existing["supermarkets"] = sm_data
 
-        # Reconstrói índice de busca
         raw_index = build_search_index(sm_data)
-        # Prepara estrutura para a função search()
         index_ready = {
             "index_map": {p["id"]: p for p in raw_index["products"]},
             "index":     raw_index["index"],
@@ -595,10 +572,9 @@ def main():
     log.info(f"🕐 Modo loop: ciclo a cada {args.interval} minuto(s). Ctrl+C para parar.")
     while True:
         run_cycle()
-        next_run = datetime.now(timezone.utc)
         log.info(f"\n⏰ Próximo ciclo em {args.interval} minutos…\n")
         time.sleep(args.interval * 60)
 
 
-if __name__ == "__main__":
+if _name_ == "_main_":
     main()
