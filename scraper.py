@@ -82,7 +82,7 @@ SUPERMARKETS = [
         "color": "#7c3aed",
         "light": "#ede9fe",
         "site": "supermarket.com.br",
-        "offers_url": "https://www.supermarket.com.br/ofertas/",
+        "offers_url": "https://redesupermarket.com.br/ofertas/",
     },
     {
         "name": "Rede Economia",
