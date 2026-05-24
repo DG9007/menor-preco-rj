@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-05-24T02:18:06.207235+00:00",
+  "updated_at": "2026-05-24T02:44:26.919792+00:00",
   "supermarkets": {
     "Guanabara": {
       "name": "Guanabara",
@@ -87,6 +87,42 @@
           "price": 0,
           "unit": "",
           "url": "https://www.supermercadosmundial.com.br/ofertas",
+          "promotion": false
+        }
+      ]
+    },
+    "Supermarket": {
+      "name": "Supermarket",
+      "color": "#7c3aed",
+      "light": "#ede9fe",
+      "site": "supermarket.com.br",
+      "offers_url": "https://www.supermarket.com.br/ofertas/",
+      "hash": "5be6e1f6",
+      "fetched_at": "2026-05-24T02:44:16.351860+00:00",
+      "offers": [
+        {
+          "product": "Encarte Supermarket (acesse o site para ver ofertas)",
+          "price": 0,
+          "unit": "",
+          "url": "https://www.supermarket.com.br/ofertas/",
+          "promotion": false
+        }
+      ]
+    },
+    "Rede Economia": {
+      "name": "Rede Economia",
+      "color": "#b45309",
+      "light": "#fef3c7",
+      "site": "redeeconomia.com.br",
+      "offers_url": "https://www.redeconomia.com.br/encartes/",
+      "hash": "509ffe7c",
+      "fetched_at": "2026-05-24T02:44:23.010304+00:00",
+      "offers": [
+        {
+          "product": "Encarte Rede Economia (acesse o site para ver ofertas)",
+          "price": 0,
+          "unit": "",
+          "url": "https://www.redeconomia.com.br/encartes/",
           "promotion": false
         }
       ]
