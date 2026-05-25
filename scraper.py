@@ -108,7 +108,7 @@ SUPERMARKETS = [
         "color":      "#1d4ed8",
         "light":      "#dbeafe",
         "site":       "supermercadosmundial.com.br",
-        "offers_url": "https://www.supermercadosmundial.com.br/ofertas-da-semana",
+        "offers_url": "https://www.supermercadosmundial.com.br/encarte",
         "parser":     "html",
     },
     {
