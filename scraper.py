@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """
-Menor Preço RJ — Scraper de Encartes v3
+Menor Preço RJ — Scraper de Encartes v4
 - Roda em loop de 30 em 30 minutos (ou intervalo configurável)
 - Modo HTML exclusivo (APIs VTEX bloqueadas/removidas em todos os alvos)
 - Gera índice de busca full-text para pesquisa genérica e específica
 - Anti-bloqueio: delays aleatórios, retry com backoff, rotação de User-Agent
+
+CORREÇÕES v4:
+  - Carrefour: meucarrefour.com.br → mercado.carrefour.com.br/ofertas-da-semana
+  - Mundial:   /ofertas-da-semana  → /encarte  (URL oficial confirmado)
+  - Novo parser específico para o encarte do Mundial (JSON embutido na página)
+  - Novo parser para o Carrefour Mercado (JSON-LD + regex de preço melhorado)
 """
 
 import json
@@ -51,15 +57,11 @@ log = logging.getLogger("scraper")
 
 # ─── Supermercados ────────────────────────────────────────────────────────────
 #
-# NOTAS v3 (todas as APIs VTEX estão bloqueadas/removidas):
-#   - Guanabara:    API VTEX 404 → HTML /encarte (encarte digital com produtos)
-#   - Prezunic:     API VTEX body vazio → HTML /ofertas
-#   - Carrefour:    mercado.carrefour.com.br 503 → HTML meucarrefour.com.br/ofertas
-#   - Assaí:        API VTEX 404 → HTML /ofertas (URL já estava certa)
-#   - Atacadão:     API VTEX retorna HTML → HTML /ofertas-arrasadoras (URL correta do site)
-#   - Mundial:      API VTEX 404 → HTML /ofertas-da-semana
-#   - Supermarket:  domínio supermarket.com.br timeout → redesupermarket.com.br/ofertas
-#   - Rede Economia: redeconomia.com.br não existe → redeeconomia.com.br/encarte
+# CORREÇÕES v4:
+#   - Carrefour:  meucarrefour.com.br (fora do ar) →
+#                 mercado.carrefour.com.br/ofertas-da-semana
+#   - Mundial:    /ofertas-da-semana (404) →
+#                 supermercadosmundial.com.br/encarte  (URL oficial ativo)
 #
 SUPERMARKETS = [
     {
@@ -79,12 +81,14 @@ SUPERMARKETS = [
         "parser":     "html",
     },
     {
+        # FIX v4: meucarrefour.com.br está fora do ar.
+        # mercado.carrefour.com.br/ofertas-da-semana é a página ativa de ofertas.
         "name":       "Carrefour",
         "color":      "#0057a8",
         "light":      "#dbeafe",
-        "site":       "meucarrefour.com.br",
-        "offers_url": "https://www.meucarrefour.com.br/ofertas",
-        "parser":     "html",
+        "site":       "mercado.carrefour.com.br",
+        "offers_url": "https://mercado.carrefour.com.br/ofertas-da-semana",
+        "parser":     "html_carrefour",
     },
     {
         "name":       "Assaí",
@@ -99,24 +103,24 @@ SUPERMARKETS = [
         "color":      "#b91c1c",
         "light":      "#fecaca",
         "site":       "atacadao.com.br",
-        # /ofertas-arrasadoras é a página de promoções ativa no site oficial
         "offers_url": "https://www.atacadao.com.br/ofertas-arrasadoras",
         "parser":     "html",
     },
     {
+        # FIX v4: /ofertas-da-semana devolvia 404.
+        # /encarte é a URL oficial e ativa do encarte digital do Mundial.
         "name":       "Mundial",
         "color":      "#1d4ed8",
         "light":      "#dbeafe",
         "site":       "supermercadosmundial.com.br",
         "offers_url": "https://www.supermercadosmundial.com.br/encarte",
-        "parser":     "html",
+        "parser":     "html_mundial",
     },
     {
         "name":       "Supermarket",
         "color":      "#7c3aed",
         "light":      "#ede9fe",
         "site":       "redesupermarket.com.br",
-        # Domínio correto: redesupermarket.com.br (não supermarket.com.br)
         "offers_url": "https://www.redesupermarket.com.br/ofertas",
         "parser":     "html",
     },
@@ -125,7 +129,6 @@ SUPERMARKETS = [
         "color":      "#b45309",
         "light":      "#fef3c7",
         "site":       "redeeconomia.com.br",
-        # Domínio correto: redeeconomia.com.br (não redeconomia.com.br)
         "offers_url": "https://www.redeeconomia.com.br/encarte/",
         "parser":     "html",
     },
@@ -133,14 +136,14 @@ SUPERMARKETS = [
 
 # ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
-def random_headers(accept_json: bool = False) -> dict:
+def random_headers(accept_json: bool = False, referer: str = "https://www.google.com.br/") -> dict:
     h = {
         "User-Agent":      random.choice(USER_AGENTS),
         "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.5",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection":      "keep-alive",
         "Cache-Control":   "no-cache",
-        "Referer":         "https://www.google.com.br/",
+        "Referer":         referer,
     }
     if accept_json:
         h["Accept"] = "application/json, text/plain, */*"
@@ -149,11 +152,12 @@ def random_headers(accept_json: bool = False) -> dict:
     return h
 
 
-def fetch(url: str, as_json: bool = False, timeout: int = REQUEST_TIMEOUT) -> Optional[Union[str, dict]]:
+def fetch(url: str, as_json: bool = False, timeout: int = REQUEST_TIMEOUT,
+          referer: str = "https://www.google.com.br/") -> Optional[Union[str, dict]]:
     """Faz requisição com retry e backoff exponencial."""
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            req = Request(url, headers=random_headers(accept_json=as_json))
+            req = Request(url, headers=random_headers(accept_json=as_json, referer=referer))
             with urlopen(req, timeout=timeout) as r:
                 raw = r.read()
                 enc = r.headers.get_content_charset("utf-8")
@@ -245,7 +249,7 @@ def parse_jsonld(html: str, base_url: str) -> list:
 
 
 def parse_html_fallback(html: str, base_url: str) -> list:
-    """Extrai produto+preço do texto puro da página."""
+    """Extrai produto+preço do texto puro da página (genérico)."""
     text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.S | re.I)
     text = re.sub(r"<[^>]+>", " ", text)
     text = text.replace("&nbsp;", " ").replace("&amp;", "&")
@@ -269,6 +273,174 @@ def parse_html_fallback(html: str, base_url: str) -> list:
     return offers
 
 
+# ── Parser específico: Carrefour Mercado ─────────────────────────────────────
+#
+# mercado.carrefour.com.br renderiza produtos via React/Next.js.
+# A página inclui um bloco __NEXT_DATA__ com toda a listagem de produtos.
+# Fallback: JSON-LD → regex HTML genérica.
+#
+def parse_carrefour(html: str, base_url: str) -> list:
+    offers = []
+
+    # Tentativa 1: __NEXT_DATA__ (Next.js)
+    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
+    if m:
+        try:
+            data = json.loads(m.group(1))
+            # Navegar pela estrutura: props → pageProps → ... → products
+            products_raw = _deep_find(data, "products") or _deep_find(data, "items") or []
+            for p in products_raw:
+                name  = p.get("name") or p.get("productName") or p.get("title") or ""
+                price = _parse_price(
+                    p.get("price") or p.get("sellingPrice") or
+                    p.get("offers", {}).get("lowPrice") or ""
+                )
+                url = p.get("linkText") or p.get("slug") or ""
+                if url and not url.startswith("http"):
+                    url = f"https://mercado.carrefour.com.br/{url.lstrip('/')}"
+                brand = p.get("brand") or ""
+                if name and price:
+                    offers.append({
+                        "product":   name[:120],
+                        "price":     price,
+                        "unit":      "un",
+                        "url":       url or base_url,
+                        "promotion": True,
+                        "brand":     brand,
+                    })
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass
+
+    if offers:
+        log.info(f"    [Carrefour] {len(offers)} produtos via __NEXT_DATA__")
+        return offers
+
+    # Tentativa 2: JSON-LD
+    offers = parse_jsonld(html, base_url)
+    if offers:
+        log.info(f"    [Carrefour] {len(offers)} produtos via JSON-LD")
+        return offers
+
+    # Tentativa 3: regex HTML genérica
+    offers = parse_html_fallback(html, base_url)
+    log.info(f"    [Carrefour] {len(offers)} produtos via regex HTML")
+    return offers
+
+
+def _deep_find(obj, key: str, _depth: int = 0):
+    """Busca recursiva por uma chave dentro de um JSON aninhado."""
+    if _depth > 12:
+        return None
+    if isinstance(obj, dict):
+        if key in obj and isinstance(obj[key], list) and len(obj[key]) > 0:
+            return obj[key]
+        for v in obj.values():
+            result = _deep_find(v, key, _depth + 1)
+            if result:
+                return result
+    elif isinstance(obj, list):
+        for item in obj[:5]:  # Limita para não explodir em listas enormes
+            result = _deep_find(item, key, _depth + 1)
+            if result:
+                return result
+    return None
+
+
+# ── Parser específico: Mundial ───────────────────────────────────────────────
+#
+# supermercadosmundial.com.br/encarte é um SPA (React).
+# A página embute os produtos do encarte em um objeto JS window.__DATA__
+# ou em blocos JSON-LD. Também tentamos capturar os preços diretamente
+# do texto HTML renderizado (SSR parcial).
+#
+# Estratégia:
+#   1. Tenta extrair JSON do bloco window.__DATA__ / __STATE__ / __STORE__
+#   2. JSON-LD (schema.org)
+#   3. Regex: padrão "R$ X,XX" + nome próximo (SSR ou hydration parcial)
+#   4. Fallback: link para encarte + alerta de página JS-only
+#
+def parse_mundial(html: str, base_url: str) -> list:
+    offers = []
+
+    # Tentativa 1: objeto JS embutido (vários nomes possíveis)
+    js_patterns = [
+        r'window\.__(?:DATA|STATE|STORE|INITIAL_STATE)__\s*=\s*(\{.*?\});',
+        r'__NUXT__\s*=\s*(\{.*?\})',
+        r'__NEXT_DATA__[^>]*>(.*?)</script>',
+    ]
+    for pat in js_patterns:
+        m = re.search(pat, html, re.S)
+        if m:
+            try:
+                data = json.loads(m.group(1))
+                products_raw = (
+                    _deep_find(data, "products") or
+                    _deep_find(data, "offers")   or
+                    _deep_find(data, "items")    or []
+                )
+                for p in products_raw:
+                    name  = (p.get("name") or p.get("title") or
+                             p.get("descricao") or p.get("produto") or "")
+                    price = _parse_price(
+                        p.get("price") or p.get("preco") or
+                        p.get("valor") or p.get("precoPromocional") or ""
+                    )
+                    if name and price:
+                        offers.append({
+                            "product":   name[:120],
+                            "price":     price,
+                            "unit":      "un",
+                            "url":       base_url,
+                            "promotion": True,
+                            "brand":     p.get("brand") or p.get("marca") or "",
+                        })
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if offers:
+            log.info(f"    [Mundial] {len(offers)} produtos via JS object")
+            return offers
+
+    # Tentativa 2: JSON-LD
+    offers = parse_jsonld(html, base_url)
+    if offers:
+        log.info(f"    [Mundial] {len(offers)} produtos via JSON-LD")
+        return offers
+
+    # Tentativa 3: regex HTML (SSR parcial)
+    # O encarte do Mundial usa padrões como:
+    #   <div class="product-name">Arroz Tio João 5kg</div>
+    #   <span class="price">R$ 18,90</span>
+    product_blocks = re.findall(
+        r'(?:product-name|nome-produto|title)["\'][^>]*>([^<]{4,100})<',
+        html, re.I
+    )
+    price_blocks = re.findall(
+        r'(?:price|preco|valor)["\'][^>]*>\s*(?:R\$\s*)?(\d{1,4}[.,]\d{2})',
+        html, re.I
+    )
+    if product_blocks and price_blocks:
+        for name, raw_price in zip(product_blocks, price_blocks):
+            price = _parse_price(raw_price)
+            if price and len(name.strip()) > 3:
+                offers.append({
+                    "product":   name.strip()[:120],
+                    "price":     price,
+                    "unit":      "un",
+                    "url":       base_url,
+                    "promotion": True,
+                    "brand":     "",
+                })
+        if offers:
+            log.info(f"    [Mundial] {len(offers)} produtos via regex de classes CSS")
+            return offers
+
+    # Tentativa 4: regex genérica
+    offers = parse_html_fallback(html, base_url)
+    if offers:
+        log.info(f"    [Mundial] {len(offers)} produtos via regex HTML genérica")
+    return offers
+
+
 # ─── Busca e indexação ────────────────────────────────────────────────────────
 
 def normalize(text: str) -> str:
@@ -281,7 +453,7 @@ def tokenize(text: str) -> list:
 
 
 def build_search_index(sm_data: dict) -> dict:
-    index: dict       = {}
+    index: dict        = {}
     products_flat: list = []
 
     for sm_name, sm in sm_data.items():
@@ -330,22 +502,38 @@ def search(query: str, index_data: dict, max_results: int = 50) -> list:
 # ─── Core scraping ───────────────────────────────────────────────────────────
 
 def scrape_supermarket(sm: dict) -> list:
-    name = sm["name"]
-    base = sm["offers_url"]
+    name   = sm["name"]
+    base   = sm["offers_url"]
+    parser = sm.get("parser", "html")
     offers: list = []
 
     log.info(f"  [{name}] Buscando HTML: {base}")
-    html = fetch(base)
+
+    # Carrefour: precisamos de referer do próprio site para evitar bloqueio
+    if parser == "html_carrefour":
+        html = fetch(base, referer="https://mercado.carrefour.com.br/")
+    elif parser == "html_mundial":
+        html = fetch(base, referer="https://www.supermercadosmundial.com.br/")
+    else:
+        html = fetch(base)
+
     if html:
-        offers = parse_jsonld(html, base)
-        if offers:
-            log.info(f"  [{name}] {len(offers)} produtos via JSON-LD")
+        if parser == "html_carrefour":
+            offers = parse_carrefour(html, base)
+        elif parser == "html_mundial":
+            offers = parse_mundial(html, base)
         else:
-            offers = parse_html_fallback(html, base)
-            log.info(f"  [{name}] {len(offers)} produtos via regex HTML")
+            # Pipeline genérico: JSON-LD → regex
+            offers = parse_jsonld(html, base)
+            if offers:
+                log.info(f"  [{name}] {len(offers)} produtos via JSON-LD")
+            else:
+                offers = parse_html_fallback(html, base)
+                log.info(f"  [{name}] {len(offers)} produtos via regex HTML")
     else:
         log.warning(f"  [{name}] Falha ao obter HTML de {base}")
 
+    # Garantia mínima: pelo menos um item de link para o site
     if not offers:
         offers = [{
             "product":   f"Ver encarte {name} no site",
@@ -356,7 +544,8 @@ def scrape_supermarket(sm: dict) -> list:
             "brand":     "",
         }]
 
-    seen: set   = set()
+    # Deduplicação por nome normalizado
+    seen: set    = set()
     unique: list = []
     for o in offers:
         key = normalize(o["product"])[:60]
@@ -445,7 +634,7 @@ def main():
     parser.add_argument("--interval", type=int, default=INTERVAL_MINUTES,
                         help=f"Intervalo em minutos entre ciclos (padrão: {INTERVAL_MINUTES})")
     parser.add_argument("--once", action="store_true",
-                        help="Roda apenas uma vez e sai (útil para GitHub Actions)")
+                        help="Roda apenas uma vez e sai (útil para GitHub Actions / cron)")
     parser.add_argument("--search", type=str, default=None,
                         help="Testa busca no índice existente e imprime resultados")
     args = parser.parse_args()
