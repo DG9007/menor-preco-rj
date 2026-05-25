@@ -126,7 +126,7 @@ SUPERMARKETS = [
         "light":      "#fef3c7",
         "site":       "redeeconomia.com.br",
         # Domínio correto: redeeconomia.com.br (não redeconomia.com.br)
-        "offers_url": "https://www.redeeconomia.com.br/encarte",
+        "offers_url": "https://www.redeeconomia.com.br/encarte/",
         "parser":     "html",
     },
 ]
