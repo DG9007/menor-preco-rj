@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-05-24T03:10:10.058915+00:00",
+  "updated_at": "2026-05-26T18:40:19.919811+00:00",
   "supermarkets": {
     "Guanabara": {
       "name": "Guanabara",
@@ -7,15 +7,141 @@
       "light": "#fee2e2",
       "site": "supermercadosguanabara.com.br",
       "offers_url": "https://www.supermercadosguanabara.com.br/",
-      "hash": "3c81cdb9",
-      "fetched_at": "2026-05-24T03:09:29.725374+00:00",
+      "hash": "43b70788",
+      "fetched_at": "2026-05-26T18:40:13.537323+00:00",
       "offers": [
         {
-          "product": "Ver encarte Guanabara no site",
-          "price": 0,
-          "unit": "",
+          "product": "Barato do dia!",
+          "price": 16.95,
+          "unit": "un",
           "url": "https://www.supermercadosguanabara.com.br/",
-          "promotion": false
+          "promotion": true
+        },
+        {
+          "product": "Arroz Rei do Sul 5kg",
+          "price": 5.99,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
+        },
+        {
+          "product": "Feijão Preto Máximo Kg",
+          "price": 25.9,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
+        },
+        {
+          "product": "Café 3 Corações 500g",
+          "price": 4.99,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
+        },
+        {
+          "product": "Leite UHT Longa Vida  Italac Integral TP Litro",
+          "price": 12.98,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
+        },
+        {
+          "product": "Leite em Pó Inst. Glória Sachê 360g",
+          "price": 4.99,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
+        },
+        {
+          "product": "Leite Condensado Semidesnatado Italac 395g",
+          "price": 1.99,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
+        },
+        {
+          "product": "Creme de Leite Italac TP 200g",
+          "price": 19.98,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
+        },
+        {
+          "product": "Azeite Extra Virgem Gallo 400ml",
+          "price": 19.98,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
+        },
+        {
+          "product": "Azeite Extra Virgem O-Live 400ml",
+          "price": 11.95,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
+        },
+        {
+          "product": "Ovos Brancos Bandeja c/20 Unids",
+          "price": 18.98,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
+        },
+        {
+          "product": "Linguiça Calabresa Perdigão kg",
+          "price": 8.75,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
+        },
+        {
+          "product": "Frango a Passarinho Rivelli Pct kg",
+          "price": 49.98,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
+        },
+        {
+          "product": "Contra Filé Bov Friboi a Vacuo Kg (peça)",
+          "price": 39.8,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
+        },
+        {
+          "product": "Alcatra Bov Friboi a Vácuo Kg (peça)",
+          "price": 69.9,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
+        },
+        {
+          "product": "Filé Mignon Bovino Anglo c/ Cordão kg",
+          "price": 2.29,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
+        },
+        {
+          "product": "Detergente Minuano 500ml",
+          "price": 19.96,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
+        },
+        {
+          "product": "Amaciante Downy 1 litro",
+          "price": 4.99,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
+        },
+        {
+          "product": "Feijão Preto Panela de Barro 1kg",
+          "price": 5.99,
+          "unit": "un",
+          "url": "https://www.supermercadosguanabara.com.br/",
+          "promotion": true
         }
       ]
     },
