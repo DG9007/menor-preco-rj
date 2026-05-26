@@ -1,669 +1,515 @@
 #!/usr/bin/env python3
 """
-Menor Preço RJ — Scraper de Encartes v4
-- Roda em loop de 30 em 30 minutos (ou intervalo configurável)
-- Modo HTML exclusivo (APIs VTEX bloqueadas/removidas em todos os alvos)
-- Gera índice de busca full-text para pesquisa genérica e específica
-- Anti-bloqueio: delays aleatórios, retry com backoff, rotação de User-Agent
+Menor Preço RJ — Scraper v4 (Playwright)
+Coleta ofertas de 4 supermercados do RJ a cada 30 minutos via GitHub Actions.
 
-CORREÇÕES v4:
-  - Carrefour: meucarrefour.com.br → mercado.carrefour.com.br/ofertas-da-semana
-  - Mundial:   /ofertas-da-semana  → /encarte  (URL oficial confirmado)
-  - Novo parser específico para o encarte do Mundial (JSON embutido na página)
-  - Novo parser para o Carrefour Mercado (JSON-LD + regex de preço melhorado)
+Supermercados:
+  1. Guanabara   → home SSR  (urllib, sem JS necessário)
+  2. Prezunic    → API VTEX  (urllib, JSON puro)
+  3. Mundial     → home SSR  (urllib, sem JS necessário)
+  4. Supermarket → Playwright (Cloudflare, precisa de browser real)
 """
 
-import json
-import re
-import time
-import random
-import hashlib
-import logging
-import argparse
-import unicodedata
+import json, re, time, random, hashlib, gzip
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Union
 from urllib.request import urlopen, Request
-from urllib.error import URLError, HTTPError
+from urllib.error import HTTPError, URLError
+from html.parser import HTMLParser
 
-# ─── Configuração ────────────────────────────────────────────────────────────
-
-DATA_DIR            = Path(__file__).parent / "data"
+DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
-OUTPUT              = DATA_DIR / "encartes.json"
-INDEX_OUT           = DATA_DIR / "search_index.json"
+OUTPUT   = DATA_DIR / "encartes.json"
 
-INTERVAL_MINUTES    = 30
-MAX_PRODUCTS_PER_SM = 200
-REQUEST_TIMEOUT     = 25
-MAX_RETRIES         = 3
-BACKOFF_BASE        = 4
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+HEADERS = {
+    "User-Agent": UA,
+    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9",
+    "Accept-Encoding": "identity",
+    "Cache-Control": "no-cache",
+}
+HEADERS_JSON = {**HEADERS, "Accept": "application/json, */*"}
+PRICE_RE = re.compile(r"R?\$?\s*(\d{1,4}[.,]\d{2})")
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
-]
+# ─── CONFIG ───────────────────────────────────────────────────────────────────
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
-log = logging.getLogger("scraper")
-
-# ─── Supermercados ────────────────────────────────────────────────────────────
-#
-# CORREÇÕES v4:
-#   - Carrefour:  meucarrefour.com.br (fora do ar) →
-#                 mercado.carrefour.com.br/ofertas-da-semana
-#   - Mundial:    /ofertas-da-semana (404) →
-#                 supermercadosmundial.com.br/encarte  (URL oficial ativo)
-#
-SUPERMARKETS = [
-    {
-        "name":       "Guanabara",
-        "color":      "#c8102e",
-        "light":      "#fee2e2",
-        "site":       "supermercadosguanabara.com.br",
-        "offers_url": "https://www.supermercadosguanabara.com.br/encarte",
-        "parser":     "html",
+SUPERMARKETS = {
+    "Guanabara": {
+        "color": "#c8102e", "light": "#fee2e2",
+        "site":  "supermercadosguanabara.com.br",
+        "url":   "https://www.supermercadosguanabara.com.br/",
+        "method": "ssr_guanabara",
     },
-    {
-        "name":       "Prezunic",
-        "color":      "#15803d",
-        "light":      "#dcfce7",
-        "site":       "prezunic.com.br",
-        "offers_url": "https://www.prezunic.com.br/ofertas",
-        "parser":     "html",
+    "Prezunic": {
+        "color": "#15803d", "light": "#dcfce7",
+        "site":  "prezunic.com.br",
+        "url":   "https://www.prezunic.com.br/api/catalog_system/pub/products/search"
+                 "?fq=productClusterIds:1737&_from=0&_to=49&O=OrderByPriceASC",
+        "method": "vtex_api",
     },
-    {
-        # FIX v4: meucarrefour.com.br está fora do ar.
-        # mercado.carrefour.com.br/ofertas-da-semana é a página ativa de ofertas.
-        "name":       "Carrefour",
-        "color":      "#0057a8",
-        "light":      "#dbeafe",
-        "site":       "mercado.carrefour.com.br",
-        "offers_url": "https://mercado.carrefour.com.br/ofertas-da-semana",
-        "parser":     "html_carrefour",
+    "Mundial": {
+        "color": "#1d4ed8", "light": "#dbeafe",
+        "site":  "supermercadosmundial.com.br",
+        "url":   "https://www.supermercadosmundial.com.br/",
+        "method": "ssr_mundial",
     },
-    {
-        "name":       "Assaí",
-        "color":      "#e85d00",
-        "light":      "#ffedd5",
-        "site":       "assai.com.br",
-        "offers_url": "https://www.assai.com.br/ofertas",
-        "parser":     "html",
+    "Supermarket": {
+        "color": "#7c3aed", "light": "#ede9fe",
+        "site":  "redesupermarket.com.br",
+        "url":   "https://redesupermarket.com.br/ofertas/",
+        "method": "playwright",
     },
-    {
-        "name":       "Atacadão",
-        "color":      "#b91c1c",
-        "light":      "#fecaca",
-        "site":       "atacadao.com.br",
-        "offers_url": "https://www.atacadao.com.br/ofertas-arrasadoras",
-        "parser":     "html",
-    },
-    {
-        # FIX v4: /ofertas-da-semana devolvia 404.
-        # /encarte é a URL oficial e ativa do encarte digital do Mundial.
-        "name":       "Mundial",
-        "color":      "#1d4ed8",
-        "light":      "#dbeafe",
-        "site":       "supermercadosmundial.com.br",
-        "offers_url": "https://www.supermercadosmundial.com.br/encarte",
-        "parser":     "html_mundial",
-    },
-    {
-        "name":       "Supermarket",
-        "color":      "#7c3aed",
-        "light":      "#ede9fe",
-        "site":       "redesupermarket.com.br",
-        "offers_url": "https://www.redesupermarket.com.br/ofertas",
-        "parser":     "html",
-    },
-    {
-        "name":       "Rede Economia",
-        "color":      "#b45309",
-        "light":      "#fef3c7",
-        "site":       "redeeconomia.com.br",
-        "offers_url": "https://www.redeeconomia.com.br/encarte/",
-        "parser":     "html",
-    },
-]
+}
 
-# ─── HTTP helpers ─────────────────────────────────────────────────────────────
+# ─── FETCH SIMPLES ────────────────────────────────────────────────────────────
 
-def random_headers(accept_json: bool = False, referer: str = "https://www.google.com.br/") -> dict:
-    h = {
-        "User-Agent":      random.choice(USER_AGENTS),
-        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection":      "keep-alive",
-        "Cache-Control":   "no-cache",
-        "Referer":         referer,
-    }
-    if accept_json:
-        h["Accept"] = "application/json, text/plain, */*"
-    else:
-        h["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-    return h
-
-
-def fetch(url: str, as_json: bool = False, timeout: int = REQUEST_TIMEOUT,
-          referer: str = "https://www.google.com.br/") -> Optional[Union[str, dict]]:
-    """Faz requisição com retry e backoff exponencial."""
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            req = Request(url, headers=random_headers(accept_json=as_json, referer=referer))
-            with urlopen(req, timeout=timeout) as r:
-                raw = r.read()
-                enc = r.headers.get_content_charset("utf-8")
-                text = raw.decode(enc, errors="replace")
-                if as_json:
-                    return json.loads(text)
-                return text
-        except HTTPError as e:
-            log.warning(f"  HTTP {e.code} em {url} (tentativa {attempt}/{MAX_RETRIES})")
-            if e.code in (403, 429, 503):
-                wait = BACKOFF_BASE ** attempt + random.uniform(1, 3)
-                log.info(f"  Aguardando {wait:.1f}s antes de tentar novamente…")
-                time.sleep(wait)
-            else:
-                break  # 404 etc. — não adianta tentar
-        except (URLError, json.JSONDecodeError) as e:
-            log.warning(f"  Erro {type(e).__name__} em {url} (tentativa {attempt}/{MAX_RETRIES}): {e}")
-            if attempt < MAX_RETRIES:
-                time.sleep(BACKOFF_BASE * attempt)
-        except Exception as e:
-            log.warning(f"  Erro inesperado: {e}")
-            break
-    return None
-
-# ─── Parsers ──────────────────────────────────────────────────────────────────
-
-PRICE_RE    = re.compile(r"R?\$?\s*(\d{1,4}[.,]\d{2})(?!\d)")
-NAME_BEFORE = re.compile(r"([A-Za-zÀ-ÿ][^\n\r<]{4,100}?)\s*R?\$\s*\d{1,4}[.,]\d{2}")
-
-
-def _parse_price(raw: str) -> Optional[float]:
-    """Converte '12,90' ou '12.90' → float."""
+def fetch(url, headers=HEADERS, timeout=25):
     try:
-        clean = re.sub(r"[^\d,.]", "", str(raw))
-        if "," in clean and "." in clean:
-            clean = clean.replace(".", "").replace(",", ".")
-        elif "," in clean:
-            clean = clean.replace(",", ".")
-        val = float(clean)
-        return round(val, 2) if 0.5 < val < 10_000 else None
-    except (ValueError, TypeError):
-        return None
+        req = Request(url, headers=headers)
+        with urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+            if r.headers.get("Content-Encoding") == "gzip":
+                raw = gzip.decompress(raw)
+            return raw.decode(r.headers.get_content_charset("utf-8") or "utf-8", errors="replace"), r.status
+    except HTTPError as e:
+        return None, e.code
+    except URLError as e:
+        print(f"    URLError: {e.reason}")
+        return None, 0
+    except Exception as e:
+        print(f"    Erro: {e}")
+        return None, 0
 
+# ─── VTEX API (Prezunic) ──────────────────────────────────────────────────────
 
-def parse_jsonld(html: str, base_url: str) -> list:
-    """Extrai produtos de blocos JSON-LD (schema.org/Product ou Offer)."""
-    offers = []
-    blocks = re.findall(
-        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
-        html, re.S | re.I
-    )
-    for raw in blocks:
+def scrape_vtex(sm_name, url, offers_url):
+    html, status = fetch(url, HEADERS_JSON)
+    if not html or status != 200:
+        print(f"  ✗ VTEX HTTP {status}")
+        return []
+    try:
+        data = json.loads(html)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    results = []
+    for item in data:
         try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-
-        items = data if isinstance(data, list) else [data]
-        i = 0
-        while i < len(items):
-            item = items[i]
-            i += 1
-            if item.get("@type") not in ("Product", "Offer"):
-                for node in item.get("@graph", []):
-                    if node.get("@type") == "Product":
-                        items.append(node)
+            name = (item.get("productName") or "").strip()
+            if not name:
                 continue
-
-            name = item.get("name", "").strip()
-            url  = item.get("url", base_url)
-
-            price_src = item if item.get("@type") == "Offer" else item.get("offers", {})
-            if isinstance(price_src, list):
-                price_src = price_src[0] if price_src else {}
-
-            price = _parse_price(price_src.get("price", ""))
-            if name and price:
-                brand_raw  = item.get("brand", {})
-                brand_name = brand_raw.get("name", "") if isinstance(brand_raw, dict) else ""
-                offers.append({
-                    "product":   name[:120],
-                    "price":     price,
-                    "unit":      "un",
-                    "url":       url,
-                    "promotion": True,
-                    "brand":     brand_name,
-                })
-    return offers
-
-
-def parse_html_fallback(html: str, base_url: str) -> list:
-    """Extrai produto+preço do texto puro da página (genérico)."""
-    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.S | re.I)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = text.replace("&nbsp;", " ").replace("&amp;", "&")
-    text = re.sub(r"\s+", " ", text)
-
-    offers = []
-    for m in NAME_BEFORE.finditer(text):
-        name    = m.group(1).strip()
-        price_m = PRICE_RE.search(m.group(0))
-        if price_m and len(name) > 4:
-            price = _parse_price(price_m.group(1))
-            if price:
-                offers.append({
-                    "product":   name[:120],
-                    "price":     price,
-                    "unit":      "un",
-                    "url":       base_url,
-                    "promotion": True,
-                    "brand":     "",
-                })
-    return offers
-
-
-# ── Parser específico: Carrefour Mercado ─────────────────────────────────────
-#
-# mercado.carrefour.com.br renderiza produtos via React/Next.js.
-# A página inclui um bloco __NEXT_DATA__ com toda a listagem de produtos.
-# Fallback: JSON-LD → regex HTML genérica.
-#
-def parse_carrefour(html: str, base_url: str) -> list:
-    offers = []
-
-    # Tentativa 1: __NEXT_DATA__ (Next.js)
-    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
-    if m:
-        try:
-            data = json.loads(m.group(1))
-            # Navegar pela estrutura: props → pageProps → ... → products
-            products_raw = _deep_find(data, "products") or _deep_find(data, "items") or []
-            for p in products_raw:
-                name  = p.get("name") or p.get("productName") or p.get("title") or ""
-                price = _parse_price(
-                    p.get("price") or p.get("sellingPrice") or
-                    p.get("offers", {}).get("lowPrice") or ""
-                )
-                url = p.get("linkText") or p.get("slug") or ""
-                if url and not url.startswith("http"):
-                    url = f"https://mercado.carrefour.com.br/{url.lstrip('/')}"
-                brand = p.get("brand") or ""
-                if name and price:
-                    offers.append({
-                        "product":   name[:120],
-                        "price":     price,
-                        "unit":      "un",
-                        "url":       url or base_url,
-                        "promotion": True,
-                        "brand":     brand,
-                    })
-        except (json.JSONDecodeError, KeyError, TypeError):
-            pass
-
-    if offers:
-        log.info(f"    [Carrefour] {len(offers)} produtos via __NEXT_DATA__")
-        return offers
-
-    # Tentativa 2: JSON-LD
-    offers = parse_jsonld(html, base_url)
-    if offers:
-        log.info(f"    [Carrefour] {len(offers)} produtos via JSON-LD")
-        return offers
-
-    # Tentativa 3: regex HTML genérica
-    offers = parse_html_fallback(html, base_url)
-    log.info(f"    [Carrefour] {len(offers)} produtos via regex HTML")
-    return offers
-
-
-def _deep_find(obj, key: str, _depth: int = 0):
-    """Busca recursiva por uma chave dentro de um JSON aninhado."""
-    if _depth > 12:
-        return None
-    if isinstance(obj, dict):
-        if key in obj and isinstance(obj[key], list) and len(obj[key]) > 0:
-            return obj[key]
-        for v in obj.values():
-            result = _deep_find(v, key, _depth + 1)
-            if result:
-                return result
-    elif isinstance(obj, list):
-        for item in obj[:5]:  # Limita para não explodir em listas enormes
-            result = _deep_find(item, key, _depth + 1)
-            if result:
-                return result
-    return None
-
-
-# ── Parser específico: Mundial ───────────────────────────────────────────────
-#
-# supermercadosmundial.com.br/encarte é um SPA (React).
-# A página embute os produtos do encarte em um objeto JS window.__DATA__
-# ou em blocos JSON-LD. Também tentamos capturar os preços diretamente
-# do texto HTML renderizado (SSR parcial).
-#
-# Estratégia:
-#   1. Tenta extrair JSON do bloco window.__DATA__ / __STATE__ / __STORE__
-#   2. JSON-LD (schema.org)
-#   3. Regex: padrão "R$ X,XX" + nome próximo (SSR ou hydration parcial)
-#   4. Fallback: link para encarte + alerta de página JS-only
-#
-def parse_mundial(html: str, base_url: str) -> list:
-    offers = []
-
-    # Tentativa 1: objeto JS embutido (vários nomes possíveis)
-    js_patterns = [
-        r'window\.__(?:DATA|STATE|STORE|INITIAL_STATE)__\s*=\s*(\{.*?\});',
-        r'__NUXT__\s*=\s*(\{.*?\})',
-        r'__NEXT_DATA__[^>]*>(.*?)</script>',
-    ]
-    for pat in js_patterns:
-        m = re.search(pat, html, re.S)
-        if m:
-            try:
-                data = json.loads(m.group(1))
-                products_raw = (
-                    _deep_find(data, "products") or
-                    _deep_find(data, "offers")   or
-                    _deep_find(data, "items")    or []
-                )
-                for p in products_raw:
-                    name  = (p.get("name") or p.get("title") or
-                             p.get("descricao") or p.get("produto") or "")
-                    price = _parse_price(
-                        p.get("price") or p.get("preco") or
-                        p.get("valor") or p.get("precoPromocional") or ""
-                    )
-                    if name and price:
-                        offers.append({
-                            "product":   name[:120],
-                            "price":     price,
-                            "unit":      "un",
-                            "url":       base_url,
-                            "promotion": True,
-                            "brand":     p.get("brand") or p.get("marca") or "",
-                        })
-            except (json.JSONDecodeError, TypeError):
-                pass
-        if offers:
-            log.info(f"    [Mundial] {len(offers)} produtos via JS object")
-            return offers
-
-    # Tentativa 2: JSON-LD
-    offers = parse_jsonld(html, base_url)
-    if offers:
-        log.info(f"    [Mundial] {len(offers)} produtos via JSON-LD")
-        return offers
-
-    # Tentativa 3: regex HTML (SSR parcial)
-    # O encarte do Mundial usa padrões como:
-    #   <div class="product-name">Arroz Tio João 5kg</div>
-    #   <span class="price">R$ 18,90</span>
-    product_blocks = re.findall(
-        r'(?:product-name|nome-produto|title)["\'][^>]*>([^<]{4,100})<',
-        html, re.I
-    )
-    price_blocks = re.findall(
-        r'(?:price|preco|valor)["\'][^>]*>\s*(?:R\$\s*)?(\d{1,4}[.,]\d{2})',
-        html, re.I
-    )
-    if product_blocks and price_blocks:
-        for name, raw_price in zip(product_blocks, price_blocks):
-            price = _parse_price(raw_price)
-            if price and len(name.strip()) > 3:
-                offers.append({
-                    "product":   name.strip()[:120],
-                    "price":     price,
-                    "unit":      "un",
-                    "url":       base_url,
-                    "promotion": True,
-                    "brand":     "",
-                })
-        if offers:
-            log.info(f"    [Mundial] {len(offers)} produtos via regex de classes CSS")
-            return offers
-
-    # Tentativa 4: regex genérica
-    offers = parse_html_fallback(html, base_url)
-    if offers:
-        log.info(f"    [Mundial] {len(offers)} produtos via regex HTML genérica")
-    return offers
-
-
-# ─── Busca e indexação ────────────────────────────────────────────────────────
-
-def normalize(text: str) -> str:
-    nfkd = unicodedata.normalize("NFKD", text)
-    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
-
-
-def tokenize(text: str) -> list:
-    return [t for t in re.split(r"[^a-z0-9]+", normalize(text)) if len(t) >= 2]
-
-
-def build_search_index(sm_data: dict) -> dict:
-    index: dict        = {}
-    products_flat: list = []
-
-    for sm_name, sm in sm_data.items():
-        for offer in sm.get("offers", []):
-            pid = len(products_flat)
-            products_flat.append({
-                "id":    pid,
-                "sm":    sm_name,
-                "color": sm.get("color", "#333"),
-                "light": sm.get("light", "#eee"),
-                **offer,
+            sellers = (item.get("items") or [{}])[0].get("sellers") or [{}]
+            offer   = (sellers[0] if sellers else {}).get("commertialOffer") or {}
+            price   = offer.get("Price") or 0
+            if not price or price <= 0:
+                continue
+            link = item.get("link") or offers_url
+            results.append({
+                "product":   name[:80],
+                "price":     round(float(price), 2),
+                "unit":      "un",
+                "url":       link,
+                "promotion": True,
             })
-            full_text = f"{offer.get('product', '')} {offer.get('brand', '')}"
-            for token in tokenize(full_text):
-                index.setdefault(token, []).append(pid)
+        except Exception:
+            continue
+    print(f"  ✓ {len(results)} produtos via VTEX API")
+    return results
 
-    for token in index:
-        index[token] = list(dict.fromkeys(index[token]))
+# ─── PARSER SSR: GUANABARA ────────────────────────────────────────────────────
+# A home do Guanabara renderiza no servidor blocos como:
+#   <span class="product-name">Arroz Rei do Sul 5kg</span>
+#   <span class="price">R$ 16,95</span>
+# O parser coleta spans/divs com class hints de nome e preço em sequência.
 
-    return {
-        "products":  products_flat,
-        "index_map": {str(p["id"]): p for p in products_flat},
-        "index":     index,
-    }
+class GuanabaraParser(HTMLParser):
+    def __init__(self, base_url):
+        super().__init__()
+        self.products  = []
+        self.base_url  = base_url
+        self._buf      = []
+        self._in_block = False
+        self._cur_name = None
+        self._skip     = 0
+        self._SKIP_TAGS = {"script","style","head","noscript","svg"}
+        self._NAME_CLS  = {"name","nome","product","produto","title","descri","item-name","shelf-item","product-name"}
+        self._PRICE_CLS = {"price","preco","preço","valor","promocional","sale","offer","bestPrice","sellingPrice"}
+
+    def _cls(self, attrs):
+        return (dict(attrs).get("class") or "").lower()
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP_TAGS: self._skip += 1; return
+        if self._skip: return
+        c = self._cls(attrs)
+        if any(h in c for h in self._NAME_CLS):
+            self._buf = []; self._in_block = "name"
+        elif any(h in c for h in self._PRICE_CLS):
+            self._buf = []; self._in_block = "price"
+
+    def handle_endtag(self, tag):
+        if tag in self._SKIP_TAGS: self._skip = max(0,self._skip-1); return
+        if self._skip or not self._in_block: return
+        text = " ".join(self._buf).strip()
+        self._buf = []
+        if self._in_block == "name" and 3 < len(text) < 100:
+            self._cur_name = text
+        elif self._in_block == "price" and self._cur_name:
+            m = PRICE_RE.search(text)
+            if m:
+                try:
+                    p = float(m.group(1).replace(",","."))
+                    if 0.5 < p < 3000:
+                        self.products.append({
+                            "product": self._cur_name[:80],
+                            "price":   round(p, 2),
+                            "unit":    "un",
+                            "url":     self.base_url,
+                            "promotion": True,
+                        })
+                        self._cur_name = None
+                except ValueError: pass
+        self._in_block = False
+
+    def handle_data(self, data):
+        if not self._skip and self._in_block:
+            self._buf.append(data.strip())
+
+# Fallback: varredura linear buscando padrão "NOME\nR$ PREÇO" no texto completo
+def parse_ssr_linear(html, base_url):
+    """
+    Extrai todos os textos visíveis e faz uma varredura buscando padrão:
+      texto_curto_sem_preço  →  texto_com_preço
+    Usado como fallback quando o parser de classe falha.
+    """
+    # Remove tags, mantém texto
+    clean = re.sub(r'<(script|style|noscript)[^>]*>.*?</\1>', '', html, flags=re.S|re.I)
+    clean = re.sub(r'<[^>]+>', ' ', clean)
+    lines = [l.strip() for l in clean.split('\n') if l.strip()]
+
+    products = []
+    seen = set()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        pm = PRICE_RE.search(line)
+        if pm:
+            # Preço na mesma linha — tenta extrair nome
+            before = line[:pm.start()].strip()
+            if 3 < len(before) < 100 and not PRICE_RE.search(before):
+                name = re.sub(r'\s+', ' ', before).strip()
+                price = float(pm.group(1).replace(",","."))
+                if 0.5 < price < 3000:
+                    key = name.lower()[:40]
+                    if key not in seen:
+                        seen.add(key)
+                        products.append({"product": name[:80], "price": round(price,2),
+                                         "unit": "un", "url": base_url, "promotion": True})
+            # Preço em linha separada — procura nome na linha anterior
+            elif i > 0:
+                prev = lines[i-1]
+                if 3 < len(prev) < 100 and not PRICE_RE.search(prev):
+                    name = re.sub(r'\s+', ' ', prev).strip()
+                    price = float(pm.group(1).replace(",","."))
+                    if 0.5 < price < 3000:
+                        key = name.lower()[:40]
+                        if key not in seen:
+                            seen.add(key)
+                            products.append({"product": name[:80], "price": round(price,2),
+                                             "unit": "un", "url": base_url, "promotion": True})
+        i += 1
+    return products
 
 
-def search(query: str, index_data: dict, max_results: int = 50) -> list:
-    tokens = tokenize(query)
-    if not tokens:
+def scrape_ssr(sm_name, url, ParserClass):
+    html, status = fetch(url)
+    if not html or status != 200:
+        print(f"  ✗ SSR HTTP {status}")
         return []
 
-    products = index_data["index_map"]
-    idx      = index_data["index"]
-    scores: dict = {}
+    parser = ParserClass(url)
+    try:
+        parser.feed(html)
+    except Exception:
+        pass
 
-    for token in tokens:
-        for pid in idx.get(token, []):
-            scores[pid] = scores.get(pid, 0) + 1
+    products = parser.products if hasattr(parser, "products") else []
 
-    n       = len(tokens)
-    matched = [products[str(pid)] for pid, score in scores.items() if score >= n]
-    matched.sort(key=lambda p: p.get("price", 9999))
-    return matched[:max_results]
+    if len(products) < 5:
+        print(f"  ~ Parser de classe: {len(products)} produtos — tentando varredura linear")
+        products = parse_ssr_linear(html, url)
 
-
-# ─── Core scraping ───────────────────────────────────────────────────────────
-
-def scrape_supermarket(sm: dict) -> list:
-    name   = sm["name"]
-    base   = sm["offers_url"]
-    parser = sm.get("parser", "html")
-    offers: list = []
-
-    log.info(f"  [{name}] Buscando HTML: {base}")
-
-    # Carrefour: precisamos de referer do próprio site para evitar bloqueio
-    if parser == "html_carrefour":
-        html = fetch(base, referer="https://mercado.carrefour.com.br/")
-    elif parser == "html_mundial":
-        html = fetch(base, referer="https://www.supermercadosmundial.com.br/")
-    else:
-        html = fetch(base)
-
-    if html:
-        if parser == "html_carrefour":
-            offers = parse_carrefour(html, base)
-        elif parser == "html_mundial":
-            offers = parse_mundial(html, base)
-        else:
-            # Pipeline genérico: JSON-LD → regex
-            offers = parse_jsonld(html, base)
-            if offers:
-                log.info(f"  [{name}] {len(offers)} produtos via JSON-LD")
-            else:
-                offers = parse_html_fallback(html, base)
-                log.info(f"  [{name}] {len(offers)} produtos via regex HTML")
-    else:
-        log.warning(f"  [{name}] Falha ao obter HTML de {base}")
-
-    # Garantia mínima: pelo menos um item de link para o site
-    if not offers:
-        offers = [{
-            "product":   f"Ver encarte {name} no site",
-            "price":     0,
-            "unit":      "",
-            "url":       base,
-            "promotion": False,
-            "brand":     "",
-        }]
-
-    # Deduplicação por nome normalizado
-    seen: set    = set()
-    unique: list = []
-    for o in offers:
-        key = normalize(o["product"])[:60]
-        if key not in seen:
-            seen.add(key)
-            unique.append(o)
-
-    return unique[:MAX_PRODUCTS_PER_SM]
+    print(f"  ✓ {len(products)} produtos via SSR")
+    return products[:60]
 
 
-def content_hash(offers: list) -> str:
-    s = json.dumps(offers, sort_keys=True, ensure_ascii=False)
-    return hashlib.md5(s.encode()).hexdigest()[:10]
+# ─── PARSER SSR: MUNDIAL ─────────────────────────────────────────────────────
+# Mundial renderiza produtos no servidor com estrutura:
+#   <p class="offer-product-name">Leite Italac 1L</p>
+#   <p class="offer-product-price">R$ 4,39 <span>cada</span></p>
+
+class MundialParser(HTMLParser):
+    def __init__(self, base_url):
+        super().__init__()
+        self.products  = []
+        self.base_url  = base_url
+        self._buf      = []
+        self._in_block = False
+        self._cur_name = None
+        self._skip     = 0
+        self._SKIP_TAGS = {"script","style","head","noscript","svg"}
+        self._NAME_CLS  = {"product-name","offer-product-name","prod-name","item-name",
+                           "name","nome","produto","description","desc","title"}
+        self._PRICE_CLS = {"product-price","offer-product-price","price","preco","preço",
+                           "best-price","selling-price","valor","oferta","promocional"}
+
+    def _cls(self, attrs):
+        return (dict(attrs).get("class") or "").lower()
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP_TAGS: self._skip += 1; return
+        if self._skip: return
+        c = self._cls(attrs)
+        if any(h in c for h in self._NAME_CLS):
+            self._buf = []; self._in_block = "name"
+        elif any(h in c for h in self._PRICE_CLS):
+            self._buf = []; self._in_block = "price"
+
+    def handle_endtag(self, tag):
+        if tag in self._SKIP_TAGS: self._skip = max(0,self._skip-1); return
+        if self._skip or not self._in_block: return
+        text = " ".join(self._buf).strip()
+        self._buf = []
+        if self._in_block == "name" and 3 < len(text) < 100:
+            self._cur_name = text
+        elif self._in_block == "price" and self._cur_name:
+            m = PRICE_RE.search(text)
+            if m:
+                try:
+                    p = float(m.group(1).replace(",","."))
+                    if 0.5 < p < 3000:
+                        self.products.append({
+                            "product": self._cur_name[:80],
+                            "price":   round(p, 2),
+                            "unit":    "un",
+                            "url":     self.base_url,
+                            "promotion": True,
+                        })
+                        self._cur_name = None
+                except ValueError: pass
+        self._in_block = False
+
+    def handle_data(self, data):
+        if not self._skip and self._in_block:
+            self._buf.append(data.strip())
+
+# ─── PLAYWRIGHT (Supermarket) ─────────────────────────────────────────────────
+
+def scrape_playwright(sm_name, url):
+    try:
+        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+    except ImportError:
+        print("  ✗ Playwright não instalado")
+        return []
+
+    print(f"  → Abrindo browser Chromium: {url}")
+    offers = []
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                ],
+            )
+            ctx = browser.new_context(
+                user_agent=UA,
+                locale="pt-BR",
+                timezone_id="America/Sao_Paulo",
+                viewport={"width": 1280, "height": 800},
+            )
+            # Mascara webdriver
+            ctx.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                window.chrome = { runtime: {} };
+            """)
+            page = ctx.new_page()
+
+            # Bloqueia recursos desnecessários para economizar tempo
+            page.route("**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,ico}", lambda r: r.abort())
+
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                # Aguarda aparecimento de preços na página
+                try:
+                    page.wait_for_selector("text=R$", timeout=15000)
+                except PWTimeout:
+                    pass
+                # Scroll para carregar lazy-loaded content
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+                page.wait_for_timeout(2000)
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_timeout(2000)
+            except PWTimeout:
+                print("  ⚠ Timeout carregando página")
+
+            html = page.content()
+            browser.close()
+
+        # Extrai com varredura linear (SSR + JS renderizado)
+        offers = parse_ssr_linear(html, url)
+
+        # Se fallback não funcionou, tenta parser de classe genérico
+        if len(offers) < 3:
+            offers = parse_generic_class(html, url)
+
+        print(f"  ✓ {len(offers)} produtos via Playwright")
+
+    except Exception as e:
+        print(f"  ✗ Playwright error: {e}")
+
+    return offers[:60]
 
 
-def load_existing() -> dict:
+# ─── PARSER GENÉRICO DE CLASSE (fallback universal) ───────────────────────────
+
+class _GenericParser(HTMLParser):
+    def __init__(self, base_url):
+        super().__init__()
+        self.products = []
+        self.base_url = base_url
+        self._buf = []; self._in = False; self._cur = {}
+        self._skip = 0; self._ST = {"script","style","head","noscript","svg"}
+        self._PC = {"price","preco","preço","valor","oferta","promo","sale"}
+        self._NC = {"name","nome","product","produto","title","item","descri"}
+
+    def _cls(self, attrs): return (dict(attrs).get("class") or "").lower()
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._ST: self._skip += 1; return
+        if self._skip: return
+        c = self._cls(attrs)
+        if any(h in c for h in self._PC): self._buf=[]; self._in="price"
+        elif any(h in c for h in self._NC): self._buf=[]; self._in="name"
+
+    def handle_endtag(self, tag):
+        if tag in self._ST: self._skip=max(0,self._skip-1); return
+        if self._skip or not self._in: return
+        text = " ".join(self._buf).strip(); self._buf=[]
+        if self._in == "name" and 3 < len(text) < 100:
+            self._cur["name"] = text
+        elif self._in == "price":
+            m = PRICE_RE.search(text)
+            if m and self._cur.get("name"):
+                try:
+                    p = float(m.group(1).replace(",","."))
+                    if 0.5 < p < 3000:
+                        self.products.append({"product": self._cur["name"][:80],
+                            "price": round(p,2), "unit":"un",
+                            "url": self.base_url, "promotion": True})
+                        self._cur = {}
+                except ValueError: pass
+        self._in = False
+
+    def handle_data(self, data):
+        if not self._skip and self._in: self._buf.append(data.strip())
+
+
+def parse_generic_class(html, base_url):
+    p = _GenericParser(base_url)
+    try: p.feed(html)
+    except Exception: pass
+    return p.products[:60]
+
+
+# ─── ORQUESTRADOR ─────────────────────────────────────────────────────────────
+
+def scrape(name, cfg):
+    method = cfg["method"]
+    url    = cfg["url"]
+    site   = cfg["site"]
+
+    if method == "vtex_api":
+        return scrape_vtex(name, url, f"https://www.{site}/ofertas")
+
+    elif method == "ssr_guanabara":
+        return scrape_ssr(name, url, GuanabaraParser)
+
+    elif method == "ssr_mundial":
+        return scrape_ssr(name, url, MundialParser)
+
+    elif method == "playwright":
+        return scrape_playwright(name, url)
+
+    return []
+
+
+# ─── HASH / IO ────────────────────────────────────────────────────────────────
+
+def chash(offers): return hashlib.md5(json.dumps(offers,sort_keys=True).encode()).hexdigest()[:8]
+
+def load():
     if OUTPUT.exists():
-        try:
-            return json.loads(OUTPUT.read_text("utf-8"))
-        except Exception:
-            pass
+        try: return json.loads(OUTPUT.read_text("utf-8"))
+        except Exception: pass
     return {"updated_at": "", "supermarkets": {}}
 
-
-def save_all(data: dict, index_data: dict):
+def save(data):
     OUTPUT.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
-    INDEX_OUT.write_text(json.dumps(index_data, ensure_ascii=False), "utf-8")
-    total = sum(len(sm.get("offers", [])) for sm in data["supermarkets"].values())
-    log.info(f"✅ Salvo: {total} produtos em {OUTPUT}")
-    log.info(f"🔍 Índice de busca: {INDEX_OUT}")
+    print(f"✅ Salvo → {OUTPUT}")
 
 
-# ─── Loop principal ───────────────────────────────────────────────────────────
+# ─── MAIN ─────────────────────────────────────────────────────────────────────
 
-def run_cycle():
-    log.info(f"{'='*60}")
-    log.info(f"🔍 Ciclo iniciado — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    log.info(f"{'='*60}")
-
-    existing = load_existing()
+def run():
+    print(f"\n🔍 Scraper — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n")
+    existing = load()
     sm_data  = existing.get("supermarkets", {})
     changed  = False
 
-    for sm in SUPERMARKETS:
-        name = sm["name"]
-        log.info(f"\n→ Processando: {name}")
+    for name, cfg in SUPERMARKETS.items():
+        print(f"→ {name}")
+        offers = scrape(name, cfg)
 
-        offers   = scrape_supermarket(sm)
-        real     = [o for o in offers if o["price"] > 0]
-        new_hash = content_hash(offers)
-        old_hash = sm_data.get(name, {}).get("hash", "")
+        if not offers:
+            # Mantém dado anterior se a coleta falhou
+            if name in sm_data:
+                print(f"  ⚠ Sem novos dados — mantendo {len(sm_data[name].get('offers', []))} produtos anteriores")
+            continue
 
-        log.info(f"  {'✓' if real else '–'} {len(real)} produto(s) com preço")
-
-        if new_hash != old_hash:
+        h = chash(offers)
+        if h != sm_data.get(name, {}).get("hash", ""):
+            print(f"  ★ {len(offers)} ofertas atualizadas")
             sm_data[name] = {
                 "name":       name,
-                "color":      sm["color"],
-                "light":      sm["light"],
-                "site":       sm["site"],
-                "offers_url": sm["offers_url"],
-                "hash":       new_hash,
+                "color":      cfg["color"],
+                "light":      cfg["light"],
+                "site":       cfg["site"],
+                "offers_url": cfg["url"],
+                "hash":       h,
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
                 "offers":     offers,
             }
             changed = True
+        else:
+            print(f"  – Sem mudança ({len(offers)} produtos)")
 
-        delay = random.uniform(8, 20)
-        log.info(f"  ⏳ Aguardando {delay:.1f}s antes do próximo supermercado…")
-        time.sleep(delay)
+        time.sleep(random.uniform(3, 6))
 
     if changed or not existing.get("updated_at"):
         existing["updated_at"]   = datetime.now(timezone.utc).isoformat()
         existing["supermarkets"] = sm_data
-        index_data = build_search_index(sm_data)
-        save_all(existing, index_data)
+        save(existing)
     else:
-        log.info("\n⏩ Nenhuma mudança detectada, JSON não atualizado.")
+        print("\n⏩ Nenhuma mudança detectada")
 
-    log.info(f"\n✅ Ciclo concluído.")
-    return changed
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Scraper de encartes — Menor Preço RJ")
-    parser.add_argument("--interval", type=int, default=INTERVAL_MINUTES,
-                        help=f"Intervalo em minutos entre ciclos (padrão: {INTERVAL_MINUTES})")
-    parser.add_argument("--once", action="store_true",
-                        help="Roda apenas uma vez e sai (útil para GitHub Actions / cron)")
-    parser.add_argument("--search", type=str, default=None,
-                        help="Testa busca no índice existente e imprime resultados")
-    args = parser.parse_args()
-
-    if args.search:
-        if not INDEX_OUT.exists():
-            print("❌ Índice não encontrado. Rode o scraper primeiro.")
-            return
-        index_data = json.loads(INDEX_OUT.read_text("utf-8"))
-        results    = search(args.search, index_data)
-        if not results:
-            print(f'Nenhum resultado para "{args.search}"')
-        else:
-            print(f'\n🔎 {len(results)} resultado(s) para "{args.search}":\n')
-            for r in results[:20]:
-                print(f"  [{r['sm']}] {r['product']} — R$ {r['price']:.2f} ({r['unit']})")
-                print(f"          {r['url']}")
-        return
-
-    if args.once:
-        run_cycle()
-        return
-
-    log.info(f"🕐 Modo loop: ciclo a cada {args.interval} minuto(s). Ctrl+C para parar.")
-    while True:
-        run_cycle()
-        log.info(f"\n⏰ Próximo ciclo em {args.interval} minutos…\n")
-        time.sleep(args.interval * 60)
+    total = sum(len(v.get("offers", [])) for v in sm_data.values())
+    print(f"\n✅ Concluído — {total} produtos indexados no total")
 
 
 if __name__ == "__main__":
-    main()
+    run()
