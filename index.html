@@ -9,13 +9,13 @@
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body,#app{height:100%}
-body{font-family:'Syne',sans-serif;color:#1a1a1a;background:#f0ede8}
-button{cursor:pointer;font-family:inherit}
+body{font-family:'Syne',sans-serif;color:#1a1a1a;background:#f0ede8;-webkit-font-smoothing:antialiased}
+button{cursor:pointer;font-family:inherit;transition:all 0.2s ease}
 input{font-family:inherit}
 a{color:inherit;text-decoration:none}
-::-webkit-scrollbar{width:3px}
+::-webkit-scrollbar{width:4px}
 ::-webkit-scrollbar-thumb{background:#d4cfc8;border-radius:99px}
-@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes shimmer{0%{background-position:-400px 0}100%{background-position:400px 0}}
 .fu{animation:fadeUp .3s cubic-bezier(.22,1,.36,1) both}
@@ -26,40 +26,28 @@ a{color:inherit;text-decoration:none}
 <div id="app"></div>
 <script>
 // ─── URL do JSON gerado pelo scraper ─────────────────────────────────────────
-// Após subir no GitHub, troque pela URL raw do seu repositório:
-// Ex: https://raw.githubusercontent.com/SEU-USUARIO/menor-preco-rj/main/data/encartes.json
-const DATA_URL = ".https://raw.githubusercontent.com/DG9007/menor-preco-rj/main/data/encartes.json";
+const DATA_URL = "https://raw.githubusercontent.com/DG9007/menor-preco-rj/main/data/encartes.json";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const gFav = d => `https://www.google.com/s2/favicons?domain=${d}&sz=64`;
 const fmt  = v => v > 0 ? new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(v) : "—";
 const fmtD = s => s ? new Intl.DateTimeFormat("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}).format(new Date(s)) : "";
 
-// ─── Estado global ────────────────────────────────────────────────────────────
 let state = {
   tab: "search",
-  data: null,       // JSON completo
+  data: null,
   loading: true,
   error: null,
-  search: {
-    query: "",
-    results: [],
-    searched: "",
-    filter: [],
-  },
-  encartes: {
-    active: null,
-  },
+  search: { query: "", results: [], searched: "", filter: [] },
+  encartes: { active: null },
 };
 
-// ─── Render engine simples ────────────────────────────────────────────────────
 let _raf = null;
 function setState(patch) {
   Object.assign(state, typeof patch === "function" ? patch(state) : patch);
   if (!_raf) _raf = requestAnimationFrame(() => { _raf = null; render(); });
 }
 
-// ─── Fetch dados ──────────────────────────────────────────────────────────────
 async function loadData() {
   try {
     const r = await fetch(DATA_URL + "?t=" + Date.now());
@@ -71,7 +59,6 @@ async function loadData() {
   }
 }
 
-// ─── Busca local nos dados ────────────────────────────────────────────────────
 function searchLocal(query) {
   if (!state.data || !query.trim()) return [];
   const q = query.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
@@ -79,7 +66,7 @@ function searchLocal(query) {
   for (const [, sm] of Object.entries(state.data.supermarkets || {})) {
     for (const offer of (sm.offers || [])) {
       const name = (offer.product || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
-      if (name.includes(q) && offer.price > 0) {
+      if (name.includes(q)) {
         results.push({
           supermarket: sm.name,
           color: sm.color,
@@ -93,297 +80,13 @@ function searchLocal(query) {
   return results.sort((a,b) => a.price - b.price);
 }
 
-// ─── Componentes HTML ─────────────────────────────────────────────────────────
-
 function Spin(size=15, color="#999") {
   return `<span style="display:inline-block;width:${size}px;height:${size}px;border:2px solid ${color}22;border-top-color:${color};border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0"></span>`;
 }
 
 function Logo(name, smInfo, size=40) {
-  const s = smInfo || { color:"#64748b", light:"#f1f5f9", icon:"?", site:"" };
+  const s = smInfo || { color:"#64748b", light:"#f1f5f9", site:"" };
   const r = Math.round(size*.25);
   return `<span style="width:${size}px;height:${size}px;border-radius:${r}px;display:inline-flex;align-items:center;justify-content:center;background:#fff;flex-shrink:0;overflow:hidden;border:1.5px solid ${s.color}20">
     <img src="${gFav(s.site)}" alt="${name}" onerror="this.style.display='none';this.nextSibling.style.display='flex'" style="width:65%;height:65%;object-fit:contain"/>
-    <span style="display:none;font-family:'DM Mono',monospace;font-weight:500;font-size:${Math.round(size*.28)}px;color:${s.color}">${s.icon||name[0]}</span>
-  </span>`;
-}
-
-function Card(item, isLo, high) {
-  const pct = high > item.price ? Math.round(((item.price - (high - (high - item.price))) / (high - (high - item.price))) * 100) : 0;
-  // simplified: just show +X% above lowest
-  const lowestPrice = isLo ? item.price : null;
-  return `
-  <div class="fu" style="background:${isLo?"#fff":"#faf9f7"};border:1.5px solid ${isLo?item.color+"55":"#e8e3dc"};border-radius:15px;padding:13px 15px;display:flex;align-items:center;gap:12px;position:relative;overflow:hidden;box-shadow:${isLo?`0 4px 18px ${item.color}12`:"0 1px 3px rgba(0,0,0,.04)"}">
-    ${isLo?`<div style="position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,${item.color},${item.color}55)"></div>`:""}
-    <span style="position:absolute;top:11px;right:13px;font-family:'DM Mono',monospace;font-size:8px;font-weight:500;color:${isLo?item.color:"#ccc"};letter-spacing:.5px">${isLo?"MENOR PREÇO":""}</span>
-    ${Logo(item.supermarket, item, 40)}
-    <div style="flex:1;min-width:0">
-      <div style="font-weight:700;font-size:14px">${item.supermarket}</div>
-      <div style="font-size:11px;color:#999;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.product}</div>
-      <div style="display:flex;gap:5px;margin-top:5px;align-items:center">
-        ${item.promotion?`<span style="font-size:8px;font-weight:700;padding:2px 7px;border-radius:99px;background:${item.light};color:${item.color}">🏷 PROMO</span>`:""}
-      </div>
-    </div>
-    <div style="text-align:right;flex-shrink:0">
-      <div style="font-size:21px;font-weight:800;color:${isLo?item.color:"#1a1a1a"};line-height:1;font-variant-numeric:tabular-nums">${fmt(item.price)}</div>
-      <div style="font-size:8px;color:#ccc;margin-top:3px;font-family:'DM Mono',monospace">${item.unit||"un"}</div>
-      ${item.url?`<a href="${item.url}" target="_blank" rel="noopener noreferrer" style="font-size:8px;color:#aaa;display:block;margin-top:3px;text-decoration:underline">ver oferta ↗</a>`:""}
-    </div>
-  </div>`;
-}
-
-const TIPS = ["leite integral 1L","arroz 5kg","feijão 1kg","frango inteiro","café 500g","óleo de soja","açúcar 1kg","ovos dúzia","pão de forma","manteiga 200g","queijo mussarela","macarrão 500g"];
-
-function SearchPage() {
-  const { query, results, searched, filter } = state.search;
-  const shown = filter.length ? results.filter(r => filter.includes(r.supermarket)) : results;
-  const low  = shown.length ? Math.min(...shown.map(r=>r.price)) : null;
-  const high = shown.length ? Math.max(...shown.map(r=>r.price)) : null;
-  const updatedAt = state.data?.updated_at ? fmtD(state.data.updated_at) : "";
-
-  return `
-  <div style="padding-bottom:90px">
-    <div style="padding:26px 16px 20px;border-bottom:1px solid #e8e3dc">
-      <div style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:4px;color:#bbb;text-transform:uppercase;margin-bottom:8px">Rio de Janeiro · 8 redes${updatedAt?` · atualizado ${updatedAt}`:""}</div>
-      <h1 style="font-weight:800;font-size:clamp(1.9rem,8vw,2.8rem);line-height:.93;letter-spacing:-1.5px;margin-bottom:16px">Menor<br/>Preço RJ</h1>
-      <div style="display:flex;gap:8px">
-        <div style="flex:1;display:flex;align-items:center;gap:8px;background:#fff;border-radius:13px;border:1.5px solid #e0dbd4;padding:9px 14px;box-shadow:0 1px 4px rgba(0,0,0,.05)">
-          <span style="color:#bbb;font-size:16px">⌕</span>
-          <input id="search-input" value="${query.replace(/"/g,'&quot;')}" placeholder="leite, arroz, frango, café…"
-            style="flex:1;border:none;background:transparent;font-size:14px;color:#1a1a1a;outline:none;min-width:0;font-family:'Syne',sans-serif"/>
-          ${query?`<button onclick="clearSearch()" style="background:none;border:none;color:#ccc;font-size:13px;padding:0">✕</button>`:""}
-        </div>
-        <button onclick="doSearch()" style="background:${!query.trim()?"#e8e3dc":"#1a1a1a"};color:${!query.trim()?"#bbb":"#fff"};border:none;border-radius:13px;padding:0 18px;font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px;flex-shrink:0">Buscar</button>
-      </div>
-    </div>
-
-    <div style="padding:16px 16px 0">
-      ${!results.length&&!searched ? `
-        <div class="fu">
-          <div style="font-size:8px;color:#ccc;font-weight:700;letter-spacing:3px;text-transform:uppercase;margin-bottom:9px">Buscas populares</div>
-          <div style="display:flex;flex-wrap:wrap;gap:6px">
-            ${TIPS.map(s=>`<button onclick="quickSearch('${s}')" style="background:#fff;border:1.5px solid #e8e3dc;border-radius:99px;padding:5px 12px;font-size:11px;color:#666;font-weight:500">${s}</button>`).join("")}
-          </div>
-        </div>` : ""}
-
-      ${searched && results.length === 0 ? `
-        <div class="fu" style="text-align:center;padding:3rem 0">
-          <div style="font-size:34px;margin-bottom:8px">🔍</div>
-          <div style="font-weight:700;font-size:14px">Nenhum resultado para "${searched}"</div>
-          <div style="font-size:11px;color:#aaa;margin-top:4px">Tente um termo diferente ou mais genérico</div>
-        </div>` : ""}
-
-      ${shown.length > 0 ? `
-        <div>
-          <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:11px">
-            <div>
-              <div style="font-weight:800;font-size:16px;letter-spacing:-.5px">"${searched}"</div>
-              <div style="font-size:9px;color:#aaa;margin-top:2px;font-family:'DM Mono',monospace">${shown.length} resultado${shown.length>1?"s":""}</div>
-            </div>
-            <button onclick="doSearch()" style="font-size:10px;color:#1a1a1a;background:#fff;border:1.5px solid #e8e3dc;border-radius:8px;padding:5px 10px;font-weight:600">↻ Atualizar</button>
-          </div>
-
-          ${results.length > 1 ? `
-            <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:11px">
-              ${[...new Set(results.map(r=>r.supermarket))].map(name => {
-                const r = results.find(x=>x.supermarket===name);
-                const on = filter.includes(name);
-                return `<button onclick="toggleFilter('${name}')" style="display:inline-flex;align-items:center;gap:4px;font-size:9px;font-weight:700;padding:3px 9px;border-radius:99px;border:1.5px solid ${on?r.color:r.color+"33"};background:${on?r.color+"12":"transparent"};color:${on?r.color:"#bbb"}">${name}</button>`;
-              }).join("")}
-              ${filter.length?`<button onclick="clearFilter()" style="font-size:9px;color:#ccc;background:none;border:1.5px solid #e8e3dc;border-radius:99px;padding:3px 9px">✕ limpar</button>`:""}
-            </div>` : ""}
-
-          ${shown.length >= 2 && low != null && high != null && low !== high ? `
-            <div class="fu" style="background:#f0fdf4;border:1.5px solid #bbf7d0;border-radius:12px;padding:10px 13px;margin-bottom:11px;display:flex;align-items:center;gap:9px">
-              <span style="font-size:18px">💸</span>
-              <div>
-                <div style="font-weight:700;font-size:12px;color:#15803d">Economize ${(((high-low)/high)*100).toFixed(0)}% comprando no ${shown[0].supermarket}</div>
-                <div style="font-size:9px;color:#4ade80;margin-top:1px;font-family:'DM Mono',monospace">${fmt(low)} vs ${fmt(high)} · economia de ${fmt(high-low)}</div>
-              </div>
-            </div>` : ""}
-
-          <div style="display:flex;flex-direction:column;gap:8px">
-            ${shown.map((item,i) => `<div style="animation-delay:${i*55}ms">${Card(item, item.price===low, high)}</div>`).join("")}
-          </div>
-          <div style="margin-top:13px;font-size:8px;color:#ccc;line-height:1.7;font-family:'DM Mono',monospace">Preços obtidos dos encartes semanais. Podem variar por filial. Confirme no local antes de comprar.</div>
-        </div>` : ""}
-    </div>
-  </div>`;
-}
-
-function EncartesPage() {
-  const { active } = state.encartes;
-  const sms = state.data ? Object.values(state.data.supermarkets || {}) : [];
-  const current = active ? (sms.find(s=>s.name===active)?.offers || []) : [];
-
-  return `
-  <div style="padding-bottom:90px">
-    <div style="padding:26px 16px 13px;border-bottom:1px solid #e8e3dc">
-      <h2 style="font-weight:800;font-size:22px;letter-spacing:-.5px;margin-bottom:2px">Encartes</h2>
-      <p style="font-size:10px;color:#aaa">Ofertas da semana por supermercado</p>
-    </div>
-
-    <div style="padding:13px 16px;display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
-      ${sms.map(s => {
-        const on = active === s.name;
-        return `<button onclick="selectSM('${s.name}')" style="background:${on?s.light:"#fff"};border:1.5px solid ${on?s.color:"#e8e3dc"};border-radius:12px;padding:10px 4px 8px;display:flex;flex-direction:column;align-items:center;gap:4px;box-shadow:${on?`0 4px 12px ${s.color}18`:"none"}">
-          ${Logo(s.name, s, 30)}
-          <span style="font-size:7px;font-weight:700;color:${on?s.color:"#bbb"};text-align:center;line-height:1.2">${s.name}</span>
-        </button>`;
-      }).join("")}
-    </div>
-
-    <div style="padding:0 16px">
-      ${!active ? `<div style="text-align:center;padding:4rem 0;color:#ccc"><div style="font-size:30px;margin-bottom:7px">☝️</div><div style="font-size:12px">Escolha um supermercado acima</div></div>` : ""}
-
-      ${active && current.length > 0 ? `
-        <div>
-          <div style="font-weight:700;font-size:14px;margin-bottom:11px">${active} <span style="font-size:9px;color:#aaa;font-weight:400;font-family:'DM Mono',monospace">· ${current.length} ofertas</span></div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-            ${current.filter(o=>o.price>0).map((item,i) => {
-              const sm = sms.find(s=>s.name===active) || {};
-              return `<div class="fu" style="animation-delay:${i*40}ms;background:#fff;border:1.5px solid #e8e3dc;border-radius:12px;padding:11px;position:relative">
-                ${item.promotion?`<span style="position:absolute;top:8px;right:8px;font-size:7px;font-weight:700;padding:2px 5px;border-radius:99px;background:${sm.light};color:${sm.color}">PROMO</span>`:""}
-                <div style="font-size:10px;font-weight:600;line-height:1.35;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;min-height:27px;margin-bottom:8px">${item.product}</div>
-                <div style="font-size:17px;font-weight:800;color:${sm.color};font-variant-numeric:tabular-nums">${fmt(item.price)}</div>
-                <div style="font-size:7px;color:#ccc;margin-top:2px;font-family:'DM Mono',monospace">${item.unit||"un"}</div>
-                ${item.url?`<a href="${item.url}" target="_blank" style="font-size:8px;color:#aaa;display:block;margin-top:4px;text-decoration:underline">ver ↗</a>`:""}
-              </div>`;
-            }).join("")}
-          </div>
-        </div>` : ""}
-
-      ${active && current.filter(o=>o.price>0).length===0 ? `
-        <div style="text-align:center;padding:2rem 0;color:#ccc">
-          <div style="font-size:11px">Nenhuma oferta disponível para ${active}</div>
-          <a href="${sms.find(s=>s.name===active)?.offers_url||"#"}" target="_blank" style="font-size:11px;color:#1a1a1a;display:block;margin-top:8px;text-decoration:underline">Ver encarte no site ↗</a>
-        </div>` : ""}
-    </div>
-  </div>`;
-}
-
-function SobrePage() {
-  const updatedAt = state.data?.updated_at ? fmtD(state.data.updated_at) : "—";
-  const sms = state.data ? Object.values(state.data.supermarkets||{}) : [];
-  const totalOffers = sms.reduce((acc,s)=>acc+(s.offers?.filter(o=>o.price>0).length||0),0);
-
-  return `
-  <div style="padding:26px 16px 90px">
-    <h2 style="font-weight:800;font-size:22px;letter-spacing:-.5px;margin-bottom:2px">Sobre</h2>
-    <p style="font-size:10px;color:#aaa;margin-bottom:20px">Como funciona o Menor Preço RJ</p>
-    ${[
-      {icon:"🤖",t:"Sem IA paga",d:"Os dados vêm de um scraper Python gratuito que visita os sites dos supermercados todo dia automaticamente."},
-      {icon:"🔄",t:"Atualização automática",d:`Todo dia às 7h o GitHub Actions roda o scraper e atualiza os encartes. Última atualização: ${updatedAt}.`},
-      {icon:"💾",t:`${totalOffers} ofertas indexadas`,d:`Dados de ${sms.length} redes armazenados em JSON estático — sem banco de dados, sem custo.`},
-      {icon:"🔍",t:"Busca offline",d:"A busca por produto funciona localmente no seu celular, sem precisar de internet após carregar a página."},
-      {icon:"⚡",t:"100% gratuito",d:"Hospedagem na Vercel, dados no GitHub, scraper no GitHub Actions. Custo total: R$ 0,00."},
-    ].map(({icon,t,d})=>`
-      <div class="fu" style="display:flex;gap:11px;margin-bottom:16px">
-        <div style="width:36px;height:36px;border-radius:10px;background:#fff;border:1.5px solid #e8e3dc;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">${icon}</div>
-        <div><div style="font-weight:700;font-size:13px;margin-bottom:2px">${t}</div><div style="font-size:11px;color:#888;line-height:1.6">${d}</div></div>
-      </div>`).join("")}
-    <div style="background:#fff;border:1.5px solid #e8e3dc;border-radius:12px;padding:13px;margin-top:4px">
-      <div style="font-size:9px;color:#ccc;font-family:'DM Mono',monospace;line-height:1.8">Preços obtidos via scraping dos sites dos supermercados. Podem variar por filial e horário. Confirme no local antes de comprar. Este app não possui vínculo com nenhum supermercado listado.</div>
-    </div>
-  </div>`;
-}
-
-const TABS = [{id:"search",label:"Buscar",icon:"⌕"},{id:"encartes",label:"Encartes",icon:"🏷"},{id:"sobre",label:"Sobre",icon:"ℹ"}];
-
-function render() {
-  const { tab, loading, error } = state;
-  document.getElementById("app").innerHTML = `
-  <div style="min-height:100vh;background:#f0ede8;max-width:480px;margin:0 auto;display:flex;flex-direction:column">
-    <!-- Header -->
-    <div style="position:sticky;top:0;z-index:50;background:rgba(240,237,232,.94);backdrop-filter:blur(16px);border-bottom:1px solid #e2ddd8;padding:12px 16px;display:flex;align-items:center;justify-content:space-between">
-      <div style="font-weight:800;font-size:15px;letter-spacing:-.5px">Menor Preço RJ</div>
-      <div style="display:flex;align-items:center;gap:5px">
-        <span style="width:6px;height:6px;border-radius:50%;background:${loading?"#f59e0b":error?"#ef4444":"#22c55e"};display:inline-block;box-shadow:0 0 5px ${loading?"#f59e0b88":error?"#ef444488":"#22c55e88"}"></span>
-        <span style="font-size:8px;color:#aaa;font-family:'DM Mono',monospace">${loading?"carregando…":error?"erro":"online"}</span>
-      </div>
-    </div>
-
-    <!-- Main -->
-    <main style="flex:1;overflow-y:auto">
-      ${loading ? `
-        <div style="padding:26px 16px">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:20px">
-            ${Spin(14,"#aaa")}
-            <span style="font-size:11px;color:#aaa;font-family:'DM Mono',monospace">Carregando encartes…</span>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:8px">
-            ${[80,70,80,65].map((h,i)=>`<div class="sk" style="height:${h}px;animation-delay:${i*100}ms"></div>`).join("")}
-          </div>
-        </div>` :
-       error ? `
-        <div style="padding:26px 16px">
-          <div style="background:#fff0f0;border:1px solid #fca5a5;border-radius:12px;padding:16px;color:#b91c1c;font-size:12px">
-            ⚠️ ${error}
-            <button onclick="location.reload()" style="display:block;margin-top:8px;font-size:11px;color:#b91c1c;background:none;border:1px solid #fca5a5;border-radius:7px;padding:4px 12px">↻ Tentar novamente</button>
-          </div>
-        </div>` :
-       tab === "search"   ? SearchPage() :
-       tab === "encartes" ? EncartesPage() :
-       SobrePage()}
-    </main>
-
-    <!-- Nav -->
-    <nav style="position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:480px;background:rgba(240,237,232,.96);backdrop-filter:blur(20px);border-top:1px solid #e2ddd8;display:grid;grid-template-columns:repeat(3,1fr);z-index:100">
-      ${TABS.map(t => {
-        const on = tab === t.id;
-        return `<button onclick="setTab('${t.id}')" style="background:none;border:none;padding:9px 4px 11px;display:flex;flex-direction:column;align-items:center;gap:2px;position:relative">
-          ${on?`<div style="position:absolute;top:0;left:20%;right:20%;height:2px;background:#1a1a1a;border-radius:2px"></div>`:""}
-          <span style="font-size:16px;opacity:${on?1:.3}">${t.icon}</span>
-          <span style="font-size:8px;font-weight:${on?700:400};color:${on?"#1a1a1a":"#bbb"};letter-spacing:.3px">${t.label}</span>
-        </button>`;
-      }).join("")}
-    </nav>
-  </div>`;
-
-  // Bind search input
-  const inp = document.getElementById("search-input");
-  if (inp) {
-    inp.addEventListener("input", e => {
-      state.search.query = e.target.value;
-    });
-    inp.addEventListener("keydown", e => e.key === "Enter" && doSearch());
-    // Restore focus if was searching
-    if (document.activeElement !== inp && state.search.query) inp.focus();
-  }
-}
-
-// ─── Ações globais ────────────────────────────────────────────────────────────
-window.setTab = (id) => setState({ tab: id });
-
-window.doSearch = () => {
-  const q = state.search.query.trim();
-  if (!q) return;
-  const results = searchLocal(q);
-  setState(s => ({ search: {...s.search, results, searched: q, filter: []} }));
-};
-
-window.quickSearch = (q) => {
-  setState(s => ({ search: {...s.search, query: q} }));
-  const results = searchLocal(q);
-  setState(s => ({ search: {...s.search, results, searched: q, filter: []} }));
-};
-
-window.clearSearch = () => setState(s => ({ search: {...s.search, query: "", results: [], searched: "", filter: []} }));
-
-window.toggleFilter = (name) => {
-  setState(s => {
-    const f = s.search.filter;
-    return { search: {...s.search, filter: f.includes(name) ? f.filter(x=>x!==name) : [...f,name]} };
-  });
-};
-
-window.clearFilter = () => setState(s => ({ search: {...s.search, filter: []} }));
-
-window.selectSM = (name) => setState(s => ({ encartes: { active: name } }));
-
-// ─── Init ─────────────────────────────────────────────────────────────────────
-render();
-loadData();
-</script>
-</body>
-</html>
+    <span style="display:none;font-family:'DM Mono',monospace;font-weight:500;font-size
