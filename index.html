@@ -25,14 +25,14 @@ a{color:inherit;text-decoration:none}
 <body>
 <div id="app"></div>
 <script>
-// ─── URL do JSON gerado pelo scraper ─────────────────────────────────────────
+// ─── URL DO JSON DO GITHUB ───────────────────────────────────────────────────
 const DATA_URL = "https://raw.githubusercontent.com/DG9007/menor-preco-rj/main/data/encartes.json";
-// ─────────────────────────────────────────────────────────────────────────────
 
 const gFav = d => `https://www.google.com/s2/favicons?domain=${d}&sz=64`;
 const fmt  = v => v > 0 ? new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(v) : "—";
 const fmtD = s => s ? new Intl.DateTimeFormat("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}).format(new Date(s)) : "";
 
+// ─── ESTADO GLOBAL ────────────────────────────────────────────────────────────
 let state = {
   tab: "search",
   data: null,
@@ -48,14 +48,17 @@ function setState(patch) {
   if (!_raf) _raf = requestAnimationFrame(() => { _raf = null; render(); });
 }
 
+// ─── BUSCA DE DADOS COM TRATAMENTO DE ERRO ROBUSTO ──────────────────────────
 async function loadData() {
   try {
     const r = await fetch(DATA_URL + "?t=" + Date.now());
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status} - Arquivo não encontrado.`);
     const data = await r.json();
+    if (!data || !data.supermarkets) throw new Error("JSON inválido ou vazio.");
     setState({ data, loading: false, error: null });
   } catch(e) {
-    setState({ loading: false, error: "Não foi possível carregar os encartes. " + e.message });
+    console.error(e);
+    setState({ loading: false, error: e.message });
   }
 }
 
@@ -87,6 +90,4 @@ function Spin(size=15, color="#999") {
 function Logo(name, smInfo, size=40) {
   const s = smInfo || { color:"#64748b", light:"#f1f5f9", site:"" };
   const r = Math.round(size*.25);
-  return `<span style="width:${size}px;height:${size}px;border-radius:${r}px;display:inline-flex;align-items:center;justify-content:center;background:#fff;flex-shrink:0;overflow:hidden;border:1.5px solid ${s.color}20">
-    <img src="${gFav(s.site)}" alt="${name}" onerror="this.style.display='none';this.nextSibling.style.display='flex'" style="width:65%;height:65%;object-fit:contain"/>
-    <span style="display:none;font-family:'DM Mono',monospace;font-weight:500;font-size
+  return `<span style="width:${size}px;height:${size}px;border-radius:${r}px;display:inline-
