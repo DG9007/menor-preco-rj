@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Menor Preço RJ — Scraper v5 (Playwright Total)
+Menor Preço RJ — Scraper v5.1 (Playwright Total com Fallback Seguro)
 Coleta ofertas reais e atualizadas de 4 supermercados do RJ.
 """
 
@@ -79,121 +79,7 @@ def scrape_with_playwright():
         print("  → Abrindo Mundial...")
         try:
             page.goto(SUPERMARKETS["Mundial"]["url"], timeout=45000, wait_until="networkidle")
-            # Seletores baseados na estrutura de prateleira/cards do Mundial
             cards = page.query_selector_all(".product-card, .item-oferta, .showcase-item")
             for card in cards:
                 name_el = card.query_selector(".product-name, .title, h3")
                 price_el = card.query_selector(".product-price, .price, .valor")
-                if name_el and price_el:
-                    name = name_el.inner_text().strip()
-                    price_text = price_el.inner_text()
-                    match = re.search(r"(\d{1,4}[.,]\d{2})", price_text)
-                    if match:
-                        price = float(match.group(1).replace(",", "."))
-                        scraped_data["Mundial"].append({
-                            "product": name[:80], "price": price, "unit": "un",
-                            "url": SUPERMARKETS["Mundial"]["url"], "promotion": True
-                        })
-        except Exception as e:
-            print(f"  ✗ Erro ao raspar Mundial: {e}")
-
-        # --- 2. SUPERMARKET ---
-        print("  → Abrindo Supermarket...")
-        try:
-            page.goto(SUPERMARKETS["Supermarket"]["url"], timeout=45000, wait_until="domcontentloaded")
-            page.wait_for_timeout(3000) # Espera o JS do Cloudflare/Banners estabilizar
-            # O Supermarket renderiza as ofertas dentro de grids de produtos ou seções de tabloide
-            items = page.query_selector_all(".oferta-item, .product-item, div[class*='oferta']")
-            for item in items:
-                name_el = item.query_selector(".nome, .title, h4")
-                price_el = item.query_selector(".preco, .price, [class*='preco']")
-                if name_el and price_el:
-                    name = name_el.inner_text().strip()
-                    price_text = price_el.inner_text()
-                    match = re.search(r"(\d{1,4}[.,]\d{2})", price_text)
-                    if match:
-                        price = float(match.group(1).replace(",", "."))
-                        scraped_data["Supermarket"].append({
-                            "product": name[:80], "price": price, "unit": "un",
-                            "url": SUPERMARKETS["Supermarket"]["url"], "promotion": True
-                        })
-        except Exception as e:
-            print(f"  ✗ Erro ao raspar Supermarket: {e}")
-
-        # --- 3. GUANABARA (Tratamento especial) ---
-        print("  → Abrindo Guanabara...")
-        try:
-            page.goto(SUPERMARKETS["Guanabara"]["url"], timeout=45000, wait_until="networkidle")
-            # Como o Guanabara usa encartes gráficos, pegamos o link/imagem do encarte vigente para o usuário ver
-            encarte_img = page.query_selector("img[src*='encarte'], .banner-encarte img, #encarte")
-            if encarte_img:
-                src = encarte_img.get_attribute("src")
-                scraped_data["Guanabara"].append({
-                    "product": "Encarte Digital Completo (Veja no Link)",
-                    "price": 0.0,
-                    "unit": "link",
-                    "url": src if src.startswith("http") else f"https://www.supermercadosguanabara.com.br{src}",
-                    "promotion": True
-                })
-        except Exception as e:
-            print(f"  ✗ Erro ao raspar Guanabara: {e}")
-            
-        browser.close()
-    return scraped_data
-
-# ─── AUXILIARES E SALVAMENTO ──────────────────────────────────────────────────
-def chash(offers): 
-    return hashlib.md5(json.dumps(offers, sort_keys=True).encode()).hexdigest()[:8]
-
-def load_existing():
-    if OUTPUT.exists():
-        try: return json.loads(OUTPUT.read_text("utf-8"))
-        except Exception: pass
-    return {"updated_at": "", "supermarkets": {}}
-
-def run():
-    print(f"\n🔍 Iniciando o Novo Orquestrador de Encartes — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n")
-    
-    existing = load_existing()
-    sm_data = existing.get("supermarkets", {})
-    changed = False
-
-    # Coleta dinâmica via Playwright (Mundial, Supermarket, Guanabara)
-    pw_results = scrape_with_playwright()
-    
-    # Coleta Prezunic via API
-    pw_results["Prezunic"] = scrape_prezunic_api(SUPERMARKETS["Prezunic"]["url"])
-
-    for name, offers in pw_results.items():
-        cfg = SUPERMARKETS[name]
-        if not offers:
-            print(f"  ⚠ {name}: Sem dados capturados nesta rodada (mantendo cache anterior se houver).")
-            continue
-            
-        h = chash(offers)
-        if h != sm_data.get(name, {}).get("hash", ""):
-            print(f"  ★ {name}: {len(offers)} ofertas atualizadas com sucesso!")
-            sm_data[name] = {
-                "name": name,
-                "color": cfg["color"],
-                "light": cfg["light"],
-                "site": cfg["site"],
-                "offers_url": cfg["url"],
-                "hash": h,
-                "fetched_at": datetime.now(timezone.utc).isoformat(),
-                "offers": offers,
-            }
-            changed = True
-        else:
-            print(f"  – {name}: Sem alterações no encarte.")
-
-    if changed or not existing.get("updated_at"):
-        existing["updated_at"] = datetime.now(timezone.utc).isoformat()
-        existing["supermarkets"] = sm_data
-        OUTPUT.write_text(json.dumps(existing, ensure_ascii=False, indent=2), "utf-8")
-        print(f"\n✅ Banco de dados atualizado em: {OUTPUT}")
-    else:
-        print("\n⏩ Nenhuma alteração global detectada nos encartes.")
-
-if __name__ == "__main__":
-    run()
