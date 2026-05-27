@@ -83,3 +83,126 @@ def scrape_with_playwright():
             for card in cards:
                 name_el = card.query_selector(".product-name, .title, h3")
                 price_el = card.query_selector(".product-price, .price, .valor")
+                if name_el and price_el:
+                    name = name_el.inner_text().strip()
+                    price_text = price_el.inner_text()
+                    match = re.search(r"(\d{1,4}[.,]\d{2})", price_text)
+                    if match:
+                        price = float(match.group(1).replace(",", "."))
+                        scraped_data["Mundial"].append({
+                            "product": name[:80], "price": price, "unit": "un",
+                            "url": SUPERMARKETS["Mundial"]["url"], "promotion": True
+                        })
+        except Exception as e:
+            print(f"  ✗ Erro ao raspar Mundial: {e}")
+
+        # --- 2. SUPERMARKET ---
+        print("  → Abrindo Supermarket...")
+        try:
+            page.goto(SUPERMARKETS["Supermarket"]["url"], timeout=45000, wait_until="domcontentloaded")
+            page.wait_for_timeout(3000)
+            items = page.query_selector_all(".oferta-item, .product-item, div[class*='oferta']")
+            for item in items:
+                name_el = item.query_selector(".nome, .title, h4")
+                price_el = item.query_selector(".preco, .price, [class*='preco']")
+                if name_el and price_el:
+                    name = name_el.inner_text().strip()
+                    price_text = price_el.inner_text()
+                    match = re.search(r"(\d{1,4}[.,]\d{2})", price_text)
+                    if match:
+                        price = float(match.group(1).replace(",", "."))
+                        scraped_data["Supermarket"].append({
+                            "product": name[:80], "price": price, "unit": "un",
+                            "url": SUPERMARKETS["Supermarket"]["url"], "promotion": True
+                        })
+        except Exception as e:
+            print(f"  ✗ Erro ao raspar Supermarket: {e}")
+
+        # --- 3. GUANABARA ---
+        print("  → Abrindo Guanabara...")
+        try:
+            page.goto(SUPERMARKETS["Guanabara"]["url"], timeout=45000, wait_until="networkidle")
+            encarte_img = page.query_selector("img[src*='encarte'], .banner-encarte img, #encarte")
+            if encarte_img:
+                src = encarte_img.get_attribute("src")
+                scraped_data["Guanabara"].append({
+                    "product": "Encarte Digital Completo (Veja no Link)",
+                    "price": 0.0,
+                    "unit": "link",
+                    "url": src if src.startswith("http") else f"https://www.supermercadosguanabara.com.br{src}",
+                    "promotion": True
+                })
+        except Exception as e:
+            print(f"  ✗ Erro ao raspar Guanabara: {e}")
+            
+        browser.close()
+    return scraped_data
+
+# ─── AUXILIARES E SALVAMENTO ──────────────────────────────────────────────────
+def chash(offers): 
+    return hashlib.md5(json.dumps(offers, sort_keys=True).encode()).hexdigest()[:8]
+
+def load_existing():
+    if OUTPUT.exists():
+        try: return json.loads(OUTPUT.read_text("utf-8"))
+        except Exception: pass
+    return {"updated_at": "", "supermarkets": {}}
+
+# ─── FLUXO PRINCIPAL ──────────────────────────────────────────────────────────
+def run():
+    print(f"\n🔍 Iniciando o Novo Orquestrador de Encartes — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n")
+    
+    existing = load_existing()
+    sm_data = existing.get("supermarkets", {})
+    changed = False
+
+    # Estrutura base de resultados caso o Playwright falte
+    pw_results = { "Guanabara": [], "Mundial": [], "Supermarket": [] }
+    
+    # Bloco seguro de verificação do Playwright
+    try:
+        from playwright.sync_api import sync_playwright
+        pw_results = scrape_with_playwright()
+    except ImportError:
+        print("  ⚠ Playwright não está instalado no ambiente. Pulando Guanabara, Mundial e Supermarket temporariamente.")
+    except Exception as e:
+        print(f"  ✗ Erro inesperado ao iniciar Playwright: {e}")
+    
+    # Executa a API do Prezunic de forma nativa e independente
+    pw_results["Prezunic"] = scrape_prezunic_api(SUPERMARKETS["Prezunic"]["url"])
+
+    # Consolida os dados e atualiza o arquivo JSON
+    for name, offers in pw_results.items():
+        cfg = SUPERMARKETS[name]
+        if not offers:
+            if name in sm_data:
+                print(f"  ⚠ {name}: Sem novos dados capturados — mantendo cache anterior.")
+            continue
+            
+        h = chash(offers)
+        if h != sm_data.get(name, {}).get("hash", ""):
+            print(f"  ★ {name}: {len(offers)} ofertas atualizadas com sucesso!")
+            sm_data[name] = {
+                "name": name,
+                "color": cfg["color"],
+                "light": cfg["light"],
+                "site": cfg["site"],
+                "offers_url": cfg["url"],
+                "hash": h,
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "offers": offers,
+            }
+            changed = True
+        else:
+            print(f"  – {name}: Sem alterações detectadas no encarte.")
+
+    if changed or not existing.get("updated_at"):
+        existing["updated_at"] = datetime.now(timezone.utc).isoformat()
+        existing["supermarkets"] = sm_data
+        OUTPUT.write_text(json.dumps(existing, ensure_ascii=False, indent=2), "utf-8")
+        print(f"\n✅ Banco de dados atualizado com sucesso em: {OUTPUT}")
+    else:
+        print("\n⏩ Nenhuma alteração global detectada nos encartes.")
+
+if __name__ == "__main__":
+    run()
